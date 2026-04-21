@@ -20,7 +20,7 @@ version: '3.8'
 
 services:
   sub2api:
-    image: weishaw/sub2api:latest
+    image: xunlian/sub2api:latest
     ports:
       - "8080:8080"
     environment:
