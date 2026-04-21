@@ -1,0 +1,144 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+  DEPLOY_PORT: ${{ vars.DEPLOY_SSH_PORT || '22' }}
+  DEPLOY_TARGET_DIR: ${{ vars.DEPLOY_TARGET_DIR || '/opt/sub2api' }}
+  DEPLOY_COMPOSE_FILE: ${{ vars.DEPLOY_COMPOSE_FILE || 'docker-compose.yml' }}
+  DEPLOY_IMAGE_NAME: ${{ vars.DEPLOY_IMAGE_NAME || 'xunlian/sub2api' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Validate deployment configuration
+        env:
+          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          required_vars=(
+            DEPLOY_HOST
+            DEPLOY_PORT
+            DEPLOY_TARGET_DIR
+            DEPLOY_COMPOSE_FILE
+            DEPLOY_IMAGE_NAME
+            DEPLOY_SSH_USER
+            DEPLOY_SSH_PRIVATE_KEY
+          )
+
+          for var_name in "${required_vars[@]}"; do
+            if [ -z "${!var_name:-}" ]; then
+              echo "::error::Missing required deployment setting: ${var_name}"
+              exit 1
+            fi
+          done
+
+      - name: Build deployment image
+        env:
+          IMAGE_VERSION: sha-${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          SHORT_SHA="${GITHUB_SHA::12}"
+
+          docker build \
+            --build-arg VERSION="${IMAGE_VERSION}" \
+            --build-arg COMMIT="${GITHUB_SHA}" \
+            --build-arg DATE="${BUILD_DATE}" \
+            -t "${DEPLOY_IMAGE_NAME}:latest" \
+            -t "${DEPLOY_IMAGE_NAME}:${SHORT_SHA}" \
+            .
+
+      - name: Export deployment archive
+        id: archive
+        run: |
+          set -euo pipefail
+
+          SHORT_SHA="${GITHUB_SHA::12}"
+          ARCHIVE_NAME="sub2api-${SHORT_SHA}.tar.gz"
+
+          docker save "${DEPLOY_IMAGE_NAME}:latest" "${DEPLOY_IMAGE_NAME}:${SHORT_SHA}" | gzip > "${ARCHIVE_NAME}"
+
+          echo "archive_name=${ARCHIVE_NAME}" >> "${GITHUB_OUTPUT}"
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${HOME}/.ssh"
+          chmod 700 "${HOME}/.ssh"
+          printf '%s\n' "${DEPLOY_SSH_PRIVATE_KEY}" > "${HOME}/.ssh/id_ed25519"
+          chmod 600 "${HOME}/.ssh/id_ed25519"
+          ssh-keyscan -p "${DEPLOY_PORT}" "${DEPLOY_HOST}" >> "${HOME}/.ssh/known_hosts"
+          chmod 644 "${HOME}/.ssh/known_hosts"
+
+      - name: Prepare remote directory
+        env:
+          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+        run: |
+          set -euo pipefail
+
+          ssh -i "${HOME}/.ssh/id_ed25519" -p "${DEPLOY_PORT}" "${DEPLOY_SSH_USER}@${DEPLOY_HOST}" \
+            "mkdir -p '${DEPLOY_TARGET_DIR}'"
+
+      - name: Upload deployment archive
+        env:
+          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+        run: |
+          set -euo pipefail
+
+          scp -i "${HOME}/.ssh/id_ed25519" -P "${DEPLOY_PORT}" \
+            "${{ steps.archive.outputs.archive_name }}" \
+            "${DEPLOY_SSH_USER}@${DEPLOY_HOST}:${DEPLOY_TARGET_DIR}/${{ steps.archive.outputs.archive_name }}"
+
+      - name: Load image and restart services
+        env:
+          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+          ARCHIVE_NAME: ${{ steps.archive.outputs.archive_name }}
+        run: |
+          set -euo pipefail
+
+          ssh -i "${HOME}/.ssh/id_ed25519" -p "${DEPLOY_PORT}" "${DEPLOY_SSH_USER}@${DEPLOY_HOST}" \
+            "DEPLOY_TARGET_DIR='${DEPLOY_TARGET_DIR}' \
+             DEPLOY_COMPOSE_FILE='${DEPLOY_COMPOSE_FILE}' \
+             DEPLOY_IMAGE_NAME='${DEPLOY_IMAGE_NAME}' \
+             ARCHIVE_NAME='${ARCHIVE_NAME}' \
+             bash -se" <<'EOF'
+          set -euo pipefail
+
+          cd "${DEPLOY_TARGET_DIR}"
+
+          if [ ! -f "${DEPLOY_COMPOSE_FILE}" ]; then
+            echo "Compose file not found: ${DEPLOY_TARGET_DIR}/${DEPLOY_COMPOSE_FILE}" >&2
+            exit 1
+          fi
+
+          gunzip -c "${ARCHIVE_NAME}" | docker load
+          rm -f "${ARCHIVE_NAME}"
+
+          docker image inspect "${DEPLOY_IMAGE_NAME}:latest" >/dev/null
+          docker compose -f "${DEPLOY_COMPOSE_FILE}" up -d --force-recreate sub2api
+          docker image prune -f >/dev/null 2>&1 || true
+          EOF

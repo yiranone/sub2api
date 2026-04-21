@@ -18,6 +18,7 @@ This directory contains files for deploying Sub2API on Linux servers.
 | `docker-deploy.sh` | **One-click Docker deployment script (recommended)** |
 | `.env.example` | Docker environment variables template |
 | `DOCKER.md` | Docker Hub documentation |
+| `CI_DEPLOY.md` | GitHub Actions 通过 SSH 传输镜像并在远端执行 Docker Compose 部署 |
 | `install.sh` | One-click binary installation script |
 | `install-datamanagementd.sh` | datamanagementd 一键安装脚本 |
 | `sub2api.service` | Systemd service unit file |
@@ -28,6 +29,16 @@ This directory contains files for deploying Sub2API on Linux servers.
 ---
 
 ## Docker Deployment (Recommended)
+
+## GitHub Actions Auto Deploy
+
+If you want pushes to `main` to automatically deploy to a server defined by
+GitHub Actions variables, see
+`CI_DEPLOY.md`.
+
+This workflow only handles image build and remote restart. The target server
+must already be initialized with Docker, Docker Compose, a compose file, and a
+valid `.env`.
 
 ### Method 1: One-Click Deployment (Recommended)
 
