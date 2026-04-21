@@ -20,6 +20,7 @@ env:
   DEPLOY_COMPOSE_FILE: ${{ vars.DEPLOY_COMPOSE_FILE || 'docker-compose.yml' }}
   DEPLOY_IMAGE_NAME: ${{ vars.DEPLOY_IMAGE_NAME || 'xunlian/sub2api' }}
 
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
