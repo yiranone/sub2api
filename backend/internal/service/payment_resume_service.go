@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"strconv"
@@ -229,6 +230,7 @@ func CanonicalizeReturnURL(raw string, srcHost string) (string, error) {
 		return "", infraerrors.BadRequest("INVALID_RETURN_URL", "return_url must target the canonical internal payment result page")
 	}
 	if !sameOriginHost(parsed.Host, srcHost) {
+		slog.Warn("payment return_url host mismatch", "returnURLHost", parsed.Host, "srcHost", srcHost, "rawReturnURL", raw)
 		return "", infraerrors.BadRequest("INVALID_RETURN_URL", "return_url must use the same host as the current site")
 	}
 	return parsed.String(), nil
