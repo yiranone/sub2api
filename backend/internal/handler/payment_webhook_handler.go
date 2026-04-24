@@ -51,6 +51,14 @@ func (h *PaymentWebhookHandler) AlipayNotify(c *gin.Context) {
 // WxpayNotify handles WeChat Pay payment notifications.
 // POST /api/v1/payment/webhook/wxpay
 func (h *PaymentWebhookHandler) WxpayNotify(c *gin.Context) {
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxWebhookBodySize))
+	if err != nil {
+		slog.Error("[Payment Webhook] failed to read wxpay notify body at controller entry", "method", c.Request.Method, "path", c.FullPath(), "error", err)
+		c.String(http.StatusBadRequest, "failed to read body")
+		return
+	}
+	c.Request.Body = io.NopCloser(strings.NewReader(string(body)))
+	slog.Info("[Payment Webhook] wxpay notify controller entry", "method", c.Request.Method, "path", c.FullPath(), "headers", c.Request.Header, "body", string(body))
 	h.handleNotify(c, payment.TypeWxpay)
 }
 
