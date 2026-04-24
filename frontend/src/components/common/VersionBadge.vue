@@ -41,7 +41,6 @@
               t('version.currentVersion')
             }}</span>
             <button
-              @click="refreshVersion(true)"
               class="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-dark-700 dark:hover:text-dark-200"
               :disabled="loading"
               :title="t('version.refresh')"
@@ -428,16 +427,16 @@ function closeDropdown() {
   dropdownOpen.value = false
 }
 
-async function refreshVersion(force = true) {
-  if (!isAdmin.value) return
-
-  // Reset update states when refreshing
-  updateError.value = ''
-  updateSuccess.value = false
-  needRestart.value = false
-
-  await appStore.fetchVersion(force)
-}
+// async function refreshVersion(force = true) {
+//   if (!isAdmin.value) return
+//
+//   // Reset update states when refreshing
+//   updateError.value = ''
+//   updateSuccess.value = false
+//   needRestart.value = false
+//
+//   await appStore.fetchVersion(force)
+// }
 
 async function handleUpdate() {
   if (updating.value) return
@@ -522,10 +521,10 @@ function handleClickOutside(event: MouseEvent) {
 }
 
 onMounted(() => {
-  if (isAdmin.value) {
-    // Use cached version if available, otherwise fetch
-    appStore.fetchVersion(false)
-  }
+  // if (isAdmin.value) {
+  //   // Use cached version if available, otherwise fetch
+  //   appStore.fetchVersion(false)
+  // }
   document.addEventListener('click', handleClickOutside)
 })
 
