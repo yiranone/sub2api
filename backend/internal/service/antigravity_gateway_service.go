@@ -1026,7 +1026,6 @@ type TestConnectionResult struct {
 // 复用 antigravityRetryLoop 的完整重试 / credits overages / 智能重试逻辑，
 // 与真实调度行为一致。差异：不做账号切换（测试指定账号）、不记录 ops 错误。
 func (s *AntigravityGatewayService) TestConnection(ctx context.Context, account *Account, modelID string) (*TestConnectionResult, error) {
-
 	// 获取 token
 	if s.tokenProvider == nil {
 		return nil, errors.New("antigravity token provider not configured")
@@ -4158,7 +4157,7 @@ func filterEmptyPartsFromGeminiRequest(body []byte) ([]byte, error) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, err
 	}
-
+	log.Printf("1 payload: %v", payload)
 	contents, ok := payload["contents"].([]any)
 	if !ok || len(contents) == 0 {
 		return body, nil
@@ -4200,6 +4199,7 @@ func filterEmptyPartsFromGeminiRequest(body []byte) ([]byte, error) {
 	}
 
 	payload["contents"] = filtered
+	log.Printf("2 payload: %v", payload)
 	return json.Marshal(payload)
 }
 
