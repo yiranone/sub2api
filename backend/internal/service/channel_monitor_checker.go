@@ -242,7 +242,9 @@ func callProvider(ctx context.Context, provider, endpoint, apiKey, model, prompt
 		return "", "", 0, err
 	}
 	headers := mergeHeaders(adapter.buildHeaders(apiKey), opts)
+	log.Printf("headers: %v", headers)
 	full := joinURL(endpoint, adapter.buildPath(model))
+	log.Printf("full: %v", full)
 	respBytes, status, err := postRawJSON(ctx, full, body, headers)
 	if err != nil {
 		return "", "", status, err
