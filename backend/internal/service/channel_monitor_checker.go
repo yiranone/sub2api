@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -235,6 +236,7 @@ func callProvider(ctx context.Context, provider, endpoint, apiKey, model, prompt
 	if !ok {
 		return "", "", 0, fmt.Errorf("unsupported provider %q", provider)
 	}
+	log.Printf("adapter: %v, provider: %v, model: %v, prompt: %v, opts: %v", adapter, provider, model, prompt, opts)
 	body, err := buildRequestBody(adapter, provider, model, prompt, opts)
 	if err != nil {
 		return "", "", 0, err
