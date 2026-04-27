@@ -366,6 +366,8 @@ func (s *GeminiOAuthService) FetchGoogleOneTier(ctx context.Context, accessToken
 	// Use Drive API to infer tier from storage quota (requires drive.readonly scope)
 	logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] Calling Drive API for storage quota...")
 
+	logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] accessToken %v, proxyURL: %v", accessToken, proxyURL)
+
 	storageInfo, err := s.driveClient.GetStorageQuota(ctx, accessToken, proxyURL)
 	if err != nil {
 		// Check if it's a 403 (scope not granted)
