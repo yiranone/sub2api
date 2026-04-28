@@ -2117,6 +2117,8 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 	if mappedModel == "" {
 		return nil, s.writeGoogleError(c, http.StatusForbidden, fmt.Sprintf("model %s not in whitelist", originalModel))
 	}
+
+	log.Printf("ForwardGemini mappedModel: %v, action: %v", mappedModel, action)
 	billingModel := mappedModel
 
 	// 获取 access_token

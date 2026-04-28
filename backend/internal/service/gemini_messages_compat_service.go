@@ -1082,7 +1082,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		body = filteredBody
 	}
 
-	log.Printf("request filteredBody %v", body)
+	log.Printf("ForwardNative request filteredBody %v", body)
 
 	switch action {
 	case "generateContent", "streamGenerateContent", "countTokens":
