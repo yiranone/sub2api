@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -1608,6 +1609,7 @@ func detectInterceptType(body []byte, model string, maxTokens int, isStream bool
 		return InterceptTypeNone
 	}
 
+	log.Printf("----req: %v", req)
 	// 检查 SUGGESTION MODE（最后一条 user 消息）
 	if hasSuggestionMode && len(req.Messages) > 0 {
 		lastMsg := req.Messages[len(req.Messages)-1]

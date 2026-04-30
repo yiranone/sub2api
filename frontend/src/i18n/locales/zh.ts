@@ -2998,6 +2998,9 @@ export default {
         oauthPassthrough: '自动透传（仅替换认证）',
         oauthPassthroughDesc:
           '开启后，该 OpenAI 账号将自动透传请求与响应，仅替换认证并保留计费/并发/审计及必要安全过滤；如遇兼容性问题可随时关闭回滚。',
+        chatCompletionsMode: 'Chat Completions 兼容模式',
+        chatCompletionsModeDesc:
+          '仅对 OpenAI API Key 生效。开启后网关会把 /responses 请求转换为 /v1/chat/completions，并自动禁用上游 WS 模式。适合豆包 / ARK 等仅支持 Chat Completions 的 OpenAI-compatible 上游。',
         responsesWebsocketsV2: 'Responses WebSocket v2',
         responsesWebsocketsV2Desc:
           '默认关闭。开启后可启用 responses_websockets_v2 协议能力（受网关全局开关与账号类型开关约束）。',

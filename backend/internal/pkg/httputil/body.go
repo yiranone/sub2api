@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -25,6 +26,7 @@ const (
 // on content length, transparently decoding any Content-Encoding the upstream
 // client used to compress the body (zstd, gzip, deflate).
 func ReadRequestBodyWithPrealloc(req *http.Request) ([]byte, error) {
+	log.Printf("-----ReadRequestBodyWithPrealloc----")
 	if req == nil || req.Body == nil {
 		return nil, nil
 	}
@@ -40,22 +42,24 @@ func ReadRequestBodyWithPrealloc(req *http.Request) ([]byte, error) {
 			capHint = int(req.ContentLength)
 		}
 	}
-
+	log.Printf("---7---")
 	buf := bytes.NewBuffer(make([]byte, 0, capHint))
 	if _, err := io.Copy(buf, req.Body); err != nil {
 		return nil, err
 	}
 	raw := buf.Bytes()
-
+	log.Printf("---9---")
 	enc := strings.ToLower(strings.TrimSpace(req.Header.Get("Content-Encoding")))
 	if enc == "" || enc == "identity" {
 		return raw, nil
 	}
-
+	log.Printf("---8---")
 	decoded, err := decompressRequestBody(enc, raw)
 	if err != nil {
 		return nil, fmt.Errorf("decode Content-Encoding %q: %w", enc, err)
 	}
+
+	log.Printf("----decoded: %v", decoded)
 
 	req.Header.Del("Content-Encoding")
 	req.Header.Del("Content-Length")

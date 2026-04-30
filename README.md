@@ -641,3 +641,15 @@ Copyright (c) 2026 Wesley Liddick
 **If you find this project useful, please give it a star!**
 
 </div>
+
+
+
+
+2026-04-30T13:21:13.120+0800    INFO    stdlog  service/account_test_service.go:183     req: &{POST https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions HTTP/1.1 1 1 map[Authorization:[Bearer ark-f78be089-831b-425f-8c76-fe71d6654487-e5966] Content-Type:[application/json]] {0x56c55408f320} 0x10471b400 112 [] false ark.cn-beijing.volces.com map[] map[] <nil> map[] <nil> <nil> <nil> 0x56c55408eba0 <nil> [] map[]}, proxyURL:  {"service": "sub2api", "env": "production", "legacy_stdlog": true}
+
+
+2026-04-30T13:20:40.078+0800    INFO    stdlog  handler/openai_gateway_handler.go:316   upstreamReq: &{POST https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions HTTP/1.1 1 1 m
+ap[Authorization:[Bearer ark-f78be089-831b-425f-8c76-fe71d6654487-e5966] Content-Type:[application/json] Originator:[codex-tui] Session_id:[019ddcd4-b0ec-7ea3-8dec-6aae4cbd0f1d] User-Agen
+t:[codex-tui/0.125.0 (Mac OS 26.4.1; arm64) Apple_Terminal/470 (codex-tui; 0.125.0)] X-Codex-Turn-Metadata:[{"session_id":"019ddcd4-b0ec-7ea3-8dec-6aae4cbd0f1d","thread_source":"user","tu
+rn_id":"019ddcd4-c088-7fc1-af4d-f568c6e71396","sandbox":"seatbelt"}]] {0x56c553df57a0} 0x10471b400 46440 [] false ark.cn-beijing.volces.com map[] map[] <nil> map[] <nil> <nil> <nil> {0x56
+c553dc1bc0} <nil> [] map[]}, proxyURL:  {"service": "sub2api", "env": "production", "legacy_stdlog": true}

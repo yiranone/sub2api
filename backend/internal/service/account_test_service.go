@@ -180,6 +180,7 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 
 	// Route to platform-specific test method
 	if account.IsOpenAI() {
+		log.Printf("open AI testOpenAIAccountConnection")
 		return s.testOpenAIAccountConnection(c, account, modelID, prompt, normalizeAccountTestMode(mode))
 	}
 
@@ -551,6 +552,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 			baseURL = "https://api.openai.com"
 		}
 		normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
+		log.Printf("normalizedBaseURL: %v", normalizedBaseURL)
 		if err != nil {
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
 		}
@@ -559,6 +561,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		} else {
 			apiURL = strings.TrimSuffix(normalizedBaseURL, "/") + "/responses"
 		}
+		log.Printf("apiURL: %v", apiURL)
 	} else {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Unsupported account type: %s", account.Type))
 	}
@@ -607,6 +610,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		proxyURL = account.Proxy.URL()
 	}
 
+	log.Printf("req: %v, proxyURL: %v", req, proxyURL)
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
@@ -1595,7 +1599,7 @@ func createOpenAIChatCompletionsTestPayload(modelID string) map[string]any {
 		"messages": []map[string]any{
 			{
 				"role":    "user",
-				"content": "hi",
+				"content": "你是谁",
 			},
 		},
 		"max_tokens": 10,

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"math/rand"
 	"net/http"
@@ -1991,7 +1992,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 	originalBody := body
 	reqModel, reqStream, promptCacheKey := extractOpenAIRequestMetaFromBody(body)
+	log.Printf("reqModel: %v, reqStream: %v, promptCacheKey: %v", reqModel, reqStream, promptCacheKey)
 	originalModel := reqModel
+
+	if account != nil && account.IsOpenAIApiKey() && account.IsOpenAIChatCompletionsMode() {
+		return s.forwardOpenAIResponsesAsChatCompletions(ctx, c, account, body, startTime)
+	}
 
 	isCodexCLI := openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
 	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
@@ -2168,6 +2174,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			account.Type,
 		)
 	}
+
 	if err := validateCodexSparkInput(reqBody, upstreamModel); err != nil {
 		setOpsUpstreamError(c, http.StatusBadRequest, err.Error(), "")
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -2219,7 +2226,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			}
 		}
 	}
-
+	log.Printf("------------")
 	// 规范化 reasoning.effort 参数（minimal -> none），与上游允许值对齐。
 	if reasoning, ok := reqBody["reasoning"].(map[string]any); ok {
 		if effort, ok := reasoning["effort"].(string); ok && effort == "minimal" {
@@ -2298,6 +2305,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 
+	log.Printf("---1----")
 	// 仅在 WSv2 模式保留 previous_response_id，其他模式（HTTP/WSv1）统一过滤。
 	// 注意：该规则同样适用于 Codex CLI 请求，避免 WSv1 向上游透传不支持字段。
 	if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
@@ -2327,7 +2335,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	//      否则 native /responses 入口透传 "fast" 给上游会被拒。chat-
 	//      completions 入口由 normalizeResponsesBodyServiceTier 完成同一
 	//      行为，这里手工实现等效逻辑。
+	log.Printf("----2-----")
 	if rawTier, ok := reqBody["service_tier"].(string); ok {
+		log.Printf("rawTier: %v", rawTier)
 		if normTier := normalizedOpenAIServiceTierValue(rawTier); normTier != "" {
 			action, errMsg := s.evaluateOpenAIFastPolicy(ctx, account, upstreamModel, normTier)
 			switch action {
@@ -2383,6 +2393,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("token: %v", token)
 
 	// Capture upstream request body for ops retry of this attempt.
 	setOpsUpstreamRequestBody(c, body)
@@ -2616,6 +2627,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 		// Send request
 		upstreamStart := time.Now()
+		log.Printf("upstreamReq: %v, proxyURL: %v", upstreamReq, proxyURL)
 		resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 		if err != nil {
@@ -2748,6 +2760,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	reqStream bool,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
+	log.Printf("---forwardOpenAIPassthrough---")
 	upstreamPassthroughModel := ""
 	if isOpenAIResponsesCompactPath(c) {
 		compactMappedModel := resolveOpenAICompactForwardModel(account, reqModel)
@@ -3693,6 +3706,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 				targetURL = buildOpenAIResponsesURL(validatedURL)
 			}
 		}
+		log.Printf("targetURL: %v, baseURL: %v", targetURL, baseURL)
 	default:
 		targetURL = openaiPlatformAPIURL
 	}
@@ -3709,6 +3723,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	// Set authentication header
 	req.Header.Set("authorization", "Bearer "+token)
 
+	log.Printf("targetURL: %v, req: %v", targetURL, req)
 	// Set headers specific to OAuth accounts (ChatGPT internal API)
 	if account.Type == AccountTypeOAuth {
 		// Required: set Host for ChatGPT API (must use req.Host, not Header.Set)
@@ -6181,10 +6196,15 @@ func normalizeOpenAIReasoningEffort(raw string) string {
 
 func buildOpenAIChatCompletionsURL(base string) string {
 	normalized := strings.TrimRight(strings.TrimSpace(base), "/")
+	log.Printf("base: %v, normalized: %v", base, normalized)
 	if strings.HasSuffix(normalized, "/chat/completions") {
 		return normalized
 	}
 	if strings.HasSuffix(normalized, "/v1") {
+		return normalized + "/chat/completions"
+	}
+
+	if strings.HasSuffix(normalized, "/v3") {
 		return normalized + "/chat/completions"
 	}
 	return normalized + "/v1/chat/completions"

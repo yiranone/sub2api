@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	mathrand "math/rand"
 	"net"
@@ -4336,6 +4337,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		// 与 forward_as_chat_completions / forward_as_responses 路径对齐，
 		// 保证原生 /v1/messages 路径也经过完整的 Parrot 字段级改写。
 		body = stripMessageCacheControl(body)
+		log.Printf("----addMessageCacheBreakpoints---")
 		body = addMessageCacheBreakpoints(body)
 		if rw := buildToolNameRewriteFromBody(body); rw != nil {
 			body = applyToolNameRewriteToBody(body, rw)
@@ -7412,7 +7414,6 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 			flusher.Flush()
 		}
 	}
-
 }
 
 func (s *GatewayService) parseSSEUsage(data string, usage *ClaudeUsage) {
@@ -9359,13 +9360,13 @@ func (s *GatewayService) initDebugGatewayBodyFile(path string) {
 
 	// 确保父目录存在
 	if dir := filepath.Dir(path); dir != "." {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			slog.Error("failed to create gateway debug log directory", "dir", dir, "error", err)
 			return
 		}
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		slog.Error("failed to open gateway debug log file", "path", path, "error", err)
 		return

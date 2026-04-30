@@ -61,6 +61,20 @@ func TestOpenAIWSProtocolResolver_Resolve(t *testing.T) {
 		require.Equal(t, "account_force_http", decision.Reason)
 	})
 
+	t.Run("chat completions mode强制HTTP", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeAPIKey,
+			Extra: map[string]any{
+				"openai_apikey_responses_websockets_v2_enabled": true,
+				"openai_chat_completions_mode":                  true,
+			},
+		}
+		decision := NewOpenAIWSProtocolResolver(baseCfg).Resolve(account)
+		require.Equal(t, OpenAIUpstreamTransportHTTPSSE, decision.Transport)
+		require.Equal(t, "chat_completions_mode", decision.Reason)
+	})
+
 	t.Run("全局关闭保持HTTP", func(t *testing.T) {
 		cfg := *baseCfg
 		cfg.Gateway.OpenAIWS.Enabled = false

@@ -42,6 +42,9 @@ func (r *defaultOpenAIWSProtocolResolver) Resolve(account *Account) OpenAIWSProt
 	if account.IsOpenAIWSForceHTTPEnabled() {
 		return openAIWSHTTPDecision("account_force_http")
 	}
+	if account.IsOpenAIChatCompletionsMode() {
+		return openAIWSHTTPDecision("chat_completions_mode")
+	}
 	if r == nil || r.cfg == nil {
 		return openAIWSHTTPDecision("config_missing")
 	}

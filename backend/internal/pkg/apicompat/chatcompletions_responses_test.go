@@ -584,6 +584,301 @@ func TestResponsesToChatCompletions_WebSearch(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ResponsesToChatCompletionsRequest tests
+// ---------------------------------------------------------------------------
+
+func TestResponsesToChatCompletionsRequest_SystemToolAndOutput(t *testing.T) {
+	req := &ResponsesRequest{
+		Model:        "gpt-5.3-codex",
+		Instructions: "You are a coding assistant.",
+		MaxOutputTokens: func() *int {
+			v := 2048
+			return &v
+		}(),
+		Reasoning: &ResponsesReasoning{Effort: "high"},
+		Tools: []ResponsesTool{{
+			Type:       "function",
+			Name:       "shell",
+			Parameters: json.RawMessage(`{"type":"object","properties":{"cmd":{"type":"string"}}}`),
+		}},
+		Input: json.RawMessage(`[
+			{"role":"user","content":[{"type":"input_text","text":"run pwd"}]},
+			{"type":"function_call","call_id":"call_1","name":"shell","arguments":"{\"cmd\":\"pwd\"}"},
+			{"type":"function_call_output","call_id":"call_1","output":"ok"}
+		]`),
+	}
+
+	chatReq, err := ResponsesToChatCompletionsRequest(req)
+	require.NoError(t, err)
+	require.Len(t, chatReq.Messages, 4)
+	assert.Equal(t, "gpt-5.3-codex", chatReq.Model)
+	require.NotNil(t, chatReq.MaxTokens)
+	assert.Equal(t, 2048, *chatReq.MaxTokens)
+	assert.Equal(t, "high", chatReq.ReasoningEffort)
+
+	var system string
+	require.NoError(t, json.Unmarshal(chatReq.Messages[0].Content, &system))
+	assert.Equal(t, "You are a coding assistant.", system)
+
+	var user string
+	require.NoError(t, json.Unmarshal(chatReq.Messages[1].Content, &user))
+	assert.Equal(t, "run pwd", user)
+
+	require.Len(t, chatReq.Messages[2].ToolCalls, 1)
+	assert.Equal(t, "call_1", chatReq.Messages[2].ToolCalls[0].ID)
+	assert.Equal(t, "shell", chatReq.Messages[2].ToolCalls[0].Function.Name)
+	assert.Equal(t, `{"cmd":"pwd"}`, chatReq.Messages[2].ToolCalls[0].Function.Arguments)
+
+	assert.Equal(t, "tool", chatReq.Messages[3].Role)
+	assert.Equal(t, "call_1", chatReq.Messages[3].ToolCallID)
+	var toolOutput string
+	require.NoError(t, json.Unmarshal(chatReq.Messages[3].Content, &toolOutput))
+	assert.Equal(t, "ok", toolOutput)
+
+	require.Len(t, chatReq.Tools, 1)
+	assert.Equal(t, "function", chatReq.Tools[0].Type)
+	require.NotNil(t, chatReq.Tools[0].Function)
+	assert.Equal(t, "shell", chatReq.Tools[0].Function.Name)
+}
+
+func TestResponsesToChatCompletionsRequest_TopLevelInputParts(t *testing.T) {
+	req := &ResponsesRequest{
+		Model:  "gpt-5.4",
+		Stream: true,
+		Input: json.RawMessage(`[
+			{"type":"input_text","text":"describe this image"},
+			{"type":"input_image","image_url":"data:image/png;base64,abc123"}
+		]`),
+	}
+
+	chatReq, err := ResponsesToChatCompletionsRequest(req)
+	require.NoError(t, err)
+	require.Len(t, chatReq.Messages, 1)
+	assert.Equal(t, "user", chatReq.Messages[0].Role)
+
+	var parts []ChatContentPart
+	require.NoError(t, json.Unmarshal(chatReq.Messages[0].Content, &parts))
+	require.Len(t, parts, 2)
+	assert.Equal(t, "text", parts[0].Type)
+	assert.Equal(t, "describe this image", parts[0].Text)
+	require.NotNil(t, parts[1].ImageURL)
+	assert.Equal(t, "data:image/png;base64,abc123", parts[1].ImageURL.URL)
+	require.NotNil(t, chatReq.StreamOptions)
+	assert.True(t, chatReq.StreamOptions.IncludeUsage)
+}
+
+func TestResponsesToChatCompletionsRequest_DeveloperBecomesSystem(t *testing.T) {
+	req := &ResponsesRequest{
+		Model: "gpt-5.4",
+		Input: json.RawMessage(`[
+			{"role":"developer","content":[{"type":"input_text","text":"developer rules"}]},
+			{"role":"user","content":[{"type":"input_text","text":"hello"}]}
+		]`),
+	}
+
+	chatReq, err := ResponsesToChatCompletionsRequest(req)
+	require.NoError(t, err)
+	require.Len(t, chatReq.Messages, 2)
+	assert.Equal(t, "system", chatReq.Messages[0].Role)
+	assert.Equal(t, "user", chatReq.Messages[1].Role)
+
+	var system string
+	require.NoError(t, json.Unmarshal(chatReq.Messages[0].Content, &system))
+	assert.Equal(t, "developer rules", system)
+}
+
+func TestChatCompletionsToResponsesResponse_ToolCallsAndReasoning(t *testing.T) {
+	resp := &ChatCompletionsResponse{
+		ID:    "chatcmpl_123",
+		Model: "doubao-1.5-thinking-pro",
+		Choices: []ChatChoice{{
+			Index: 0,
+			Message: ChatMessage{
+				Role:             "assistant",
+				Content:          json.RawMessage(`"done"`),
+				ReasoningContent: "thinking",
+				ToolCalls: []ChatToolCall{{
+					ID:   "call_1",
+					Type: "function",
+					Function: ChatFunctionCall{
+						Name:      "shell",
+						Arguments: `{"cmd":"pwd"}`,
+					},
+				}},
+			},
+			FinishReason: "tool_calls",
+		}},
+		Usage: &ChatUsage{
+			PromptTokens:     10,
+			CompletionTokens: 4,
+			TotalTokens:      14,
+			PromptTokensDetails: &ChatTokenDetails{
+				CachedTokens: 3,
+			},
+		},
+	}
+
+	out := ChatCompletionsToResponsesResponse(resp)
+	assert.Equal(t, "chatcmpl_123", out.ID)
+	assert.Equal(t, "response", out.Object)
+	assert.Equal(t, "doubao-1.5-thinking-pro", out.Model)
+	assert.Equal(t, "completed", out.Status)
+	require.Len(t, out.Output, 3)
+	assert.Equal(t, "reasoning", out.Output[0].Type)
+	assert.Equal(t, "message", out.Output[1].Type)
+	assert.Equal(t, "function_call", out.Output[2].Type)
+	assert.Equal(t, "call_1", out.Output[2].CallID)
+	assert.Equal(t, "shell", out.Output[2].Name)
+	assert.Equal(t, `{"cmd":"pwd"}`, out.Output[2].Arguments)
+	require.NotNil(t, out.Usage)
+	assert.Equal(t, 10, out.Usage.InputTokens)
+	assert.Equal(t, 4, out.Usage.OutputTokens)
+	require.NotNil(t, out.Usage.InputTokensDetails)
+	assert.Equal(t, 3, out.Usage.InputTokensDetails.CachedTokens)
+}
+
+func TestChatCompletionsToResponsesResponse_ReasoningFallbackToVisibleMessage(t *testing.T) {
+	resp := &ChatCompletionsResponse{
+		ID:    "chatcmpl_reasoning_only",
+		Model: "doubao-seed-2-0-pro",
+		Choices: []ChatChoice{{
+			Index: 0,
+			Message: ChatMessage{
+				Role:             "assistant",
+				ReasoningContent: "visible fallback",
+			},
+			FinishReason: "stop",
+		}},
+	}
+
+	out := ChatCompletionsToResponsesResponse(resp)
+	require.Len(t, out.Output, 2)
+	assert.Equal(t, "reasoning", out.Output[0].Type)
+	assert.Equal(t, "message", out.Output[1].Type)
+	require.Len(t, out.Output[1].Content, 1)
+	assert.Equal(t, "visible fallback", out.Output[1].Content[0].Text)
+}
+
+func TestChatCompletionsChunkToResponsesEvents_Finalize(t *testing.T) {
+	state := NewChatCompletionsToResponsesState()
+	state.Model = "gpt-5.3-codex"
+
+	events := ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
+		ID:    "chatcmpl_stream",
+		Model: "doubao-1.5-thinking-pro",
+		Choices: []ChatChunkChoice{{
+			Index: 0,
+			Delta: ChatDelta{Role: "assistant"},
+		}},
+	}, state)
+	require.Len(t, events, 2)
+	assert.Equal(t, "response.created", events[0].Type)
+	assert.Equal(t, "response.in_progress", events[1].Type)
+
+	events = ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
+		ID:    "chatcmpl_stream",
+		Model: "doubao-1.5-thinking-pro",
+		Choices: []ChatChunkChoice{{
+			Index: 0,
+			Delta: ChatDelta{Content: stringPtr("hello")},
+		}},
+	}, state)
+	require.Len(t, events, 3)
+	assert.Equal(t, "response.output_item.added", events[0].Type)
+	assert.Equal(t, "response.content_part.added", events[1].Type)
+	assert.Equal(t, "response.output_text.delta", events[2].Type)
+
+	toolIndex := 0
+	events = ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
+		ID:    "chatcmpl_stream",
+		Model: "doubao-1.5-thinking-pro",
+		Choices: []ChatChunkChoice{{
+			Index: 0,
+			Delta: ChatDelta{
+				ToolCalls: []ChatToolCall{{
+					Index: &toolIndex,
+					ID:    "call_1",
+					Type:  "function",
+					Function: ChatFunctionCall{
+						Name:      "shell",
+						Arguments: `{"cmd":"pwd"}`,
+					},
+				}},
+			},
+		}},
+	}, state)
+	require.Len(t, events, 2)
+	assert.Equal(t, "response.output_item.added", events[0].Type)
+	assert.Equal(t, "response.function_call_arguments.delta", events[1].Type)
+
+	_ = ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
+		ID:    "chatcmpl_stream",
+		Model: "doubao-1.5-thinking-pro",
+		Choices: []ChatChunkChoice{{
+			Index:        0,
+			FinishReason: stringPtr("tool_calls"),
+		}},
+		Usage: &ChatUsage{
+			PromptTokens:     20,
+			CompletionTokens: 5,
+			TotalTokens:      25,
+		},
+	}, state)
+
+	finalEvents := FinalizeChatCompletionsResponsesStream(state)
+	require.NotEmpty(t, finalEvents)
+	assert.Equal(t, "response.output_text.done", finalEvents[0].Type)
+	assert.Equal(t, "response.content_part.done", finalEvents[1].Type)
+	assert.Equal(t, "response.output_item.done", finalEvents[2].Type)
+	assert.Equal(t, "response.function_call_arguments.done", finalEvents[3].Type)
+	assert.Equal(t, "response.output_item.done", finalEvents[4].Type)
+	assert.Equal(t, "response.completed", finalEvents[len(finalEvents)-1].Type)
+	require.NotNil(t, finalEvents[len(finalEvents)-1].Response)
+	require.NotNil(t, finalEvents[len(finalEvents)-1].Response.Usage)
+	assert.Equal(t, 20, finalEvents[len(finalEvents)-1].Response.Usage.InputTokens)
+	assert.Equal(t, 5, finalEvents[len(finalEvents)-1].Response.Usage.OutputTokens)
+}
+
+func TestChatCompletionsChunkToResponsesEvents_FinalizeReasoningOnlyAddsVisibleText(t *testing.T) {
+	state := NewChatCompletionsToResponsesState()
+	state.Model = "gpt-5.4"
+
+	events := ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
+		ID:    "chatcmpl_reasoning_stream",
+		Model: "doubao-seed-2-0-pro",
+		Choices: []ChatChunkChoice{{
+			Index: 0,
+			Delta: ChatDelta{
+				Role:             "assistant",
+				ReasoningContent: stringPtr("fallback text"),
+			},
+		}},
+	}, state)
+	require.Len(t, events, 4)
+	assert.Equal(t, "response.created", events[0].Type)
+	assert.Equal(t, "response.in_progress", events[1].Type)
+	assert.Equal(t, "response.output_item.added", events[2].Type)
+	assert.Equal(t, "response.reasoning_summary_text.delta", events[3].Type)
+
+	finalEvents := FinalizeChatCompletionsResponsesStream(state)
+	require.Len(t, finalEvents, 9)
+	assert.Equal(t, "response.reasoning_summary_text.done", finalEvents[0].Type)
+	assert.Equal(t, "response.output_item.done", finalEvents[1].Type)
+	assert.Equal(t, "response.output_item.added", finalEvents[2].Type)
+	assert.Equal(t, "response.content_part.added", finalEvents[3].Type)
+	assert.Equal(t, "response.output_text.delta", finalEvents[4].Type)
+	assert.Equal(t, "fallback text", finalEvents[4].Delta)
+	assert.Equal(t, "response.output_text.done", finalEvents[5].Type)
+	assert.Equal(t, "response.content_part.done", finalEvents[6].Type)
+	assert.Equal(t, "response.output_item.done", finalEvents[7].Type)
+	assert.Equal(t, "response.completed", finalEvents[8].Type)
+	require.NotNil(t, finalEvents[8].Response)
+	require.Len(t, finalEvents[8].Response.Output, 2)
+	assert.Equal(t, "message", finalEvents[8].Response.Output[1].Type)
+	assert.Equal(t, "fallback text", finalEvents[8].Response.Output[1].Content[0].Text)
+}
+
+// ---------------------------------------------------------------------------
 // Streaming: ResponsesEventToChatChunks tests
 // ---------------------------------------------------------------------------
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"runtime/debug"
 	"strconv"
@@ -118,7 +119,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	if !h.ensureResponsesDependencies(c, reqLog) {
 		return
 	}
-
+	log.Printf("-----------c.request: %v", c.Request)
 	// Read request body
 	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
 	if err != nil {
@@ -137,11 +138,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	setOpsRequestContext(c, "", false, body)
 	sessionHashBody := body
+	log.Printf("service.IsOpenAIResponsesCompactPathForTest(c): %v", service.IsOpenAIResponsesCompactPathForTest(c))
 	if service.IsOpenAIResponsesCompactPathForTest(c) {
 		if compactSeed := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String()); compactSeed != "" {
 			c.Set(service.OpenAICompactSessionSeedKeyForTest(), compactSeed)
 		}
 		normalizedCompactBody, normalizedCompact, compactErr := service.NormalizeOpenAICompactRequestBodyForTest(body)
+		log.Printf("normalizedCompactBody: %v, normalizedCompact: %v", normalizedCompactBody, normalizedCompact)
 		if compactErr != nil {
 			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to normalize compact request body")
 			return
@@ -212,7 +215,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	// Get subscription info (may be nil)
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
-
+	log.Printf("---11---")
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 	routingStart := time.Now()
 
@@ -220,11 +223,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	if !acquired {
 		return
 	}
+	log.Printf("---12---")
 	// 确保请求取消时也会释放槽位，避免长连接被动中断造成泄漏
 	if userReleaseFunc != nil {
 		defer userReleaseFunc()
 	}
-
+	log.Printf("---13---")
 	// 2. Re-check billing eligibility after wait
 	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription); err != nil {
 		reqLog.Info("openai.billing_eligibility_check_failed", zap.Error(err))
@@ -248,7 +252,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	for {
 		// Select account supporting the requested model
-		reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
+		reqLog.Info("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithScheduler(
 			c.Request.Context(),
 			apiKey.GroupID,
@@ -286,7 +290,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if previousResponseID != "" && selection != nil && selection.Account != nil {
 			reqLog.Debug("openai.account_selected_with_previous_response_id", zap.Int64("account_id", selection.Account.ID))
 		}
-		reqLog.Debug("openai.account_schedule_decision",
+		reqLog.Info("openai.account_schedule_decision",
 			zap.String("layer", scheduleDecision.Layer),
 			zap.Bool("sticky_previous_hit", scheduleDecision.StickyPreviousHit),
 			zap.Bool("sticky_session_hit", scheduleDecision.StickySessionHit),
@@ -299,7 +303,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		setOpsSelectedAccount(c, account.ID, account.Platform)
-
+		log.Printf("---14---")
 		accountReleaseFunc, acquired := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
 		if !acquired {
 			return
@@ -420,7 +424,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				).Error("openai.record_usage_failed", zap.Error(err))
 			}
 		})
-		reqLog.Debug("openai.request_completed",
+		reqLog.Info("openai.request_completed",
 			zap.Int64("account_id", account.ID),
 			zap.Int("switch_count", switchCount),
 		)
