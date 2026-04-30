@@ -304,6 +304,33 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 		}
 	}
 
+	if strings.Contains(modelLower, "minimax") {
+		switch modelLower {
+		case "minimax-m2.7":
+			return s.fallbackPrices["gpt-5.5"]
+		default:
+			return s.fallbackPrices["gpt-5.3-codex"]
+		}
+	}
+
+	if strings.Contains(modelLower, "speech") {
+		switch modelLower {
+		case "speech-2.8-hd":
+			return s.fallbackPrices["gpt-5.5"]
+		default:
+			return s.fallbackPrices["gpt-5.3-codex"]
+		}
+	}
+
+	if strings.Contains(modelLower, "kimi") {
+		switch modelLower {
+		case "kimi-k2.5":
+			return s.fallbackPrices["gpt-5.5"]
+		default:
+			return s.fallbackPrices["gpt-5.3-codex"]
+		}
+	}
+
 	return nil
 }
 
