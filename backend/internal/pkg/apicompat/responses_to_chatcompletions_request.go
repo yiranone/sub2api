@@ -33,7 +33,7 @@ func ResponsesToChatCompletionsRequest(req *ResponsesRequest) (*ChatCompletionsR
 
 	if req.MaxOutputTokens != nil && *req.MaxOutputTokens > 0 {
 		v := *req.MaxOutputTokens
-		out.MaxTokens = &v
+		out.MaxCompletionTokens = &v
 	}
 
 	if req.Reasoning != nil && strings.TrimSpace(req.Reasoning.Effort) != "" {

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -21,6 +22,76 @@ import (
 )
 
 const openAIResponsesCompatLogPreviewMaxBytes = 600
+
+func isOpenAICompatMiniMaxProvider(account *Account) bool {
+	if account == nil {
+		return false
+	}
+	baseURL := strings.ToLower(strings.TrimSpace(account.GetOpenAIBaseURL()))
+	apiKey := strings.ToLower(strings.TrimSpace(account.GetOpenAIApiKey()))
+	return strings.Contains(baseURL, "minimax") ||
+		strings.Contains(baseURL, "abab") ||
+		strings.HasPrefix(apiKey, "sk-minimax")
+}
+
+func estimateOpenAICompatPromptTokensFromChatBody(body []byte) int {
+	total := 0
+	for _, msg := range gjson.GetBytes(body, "messages").Array() {
+		total += 4
+		content := msg.Get("content")
+		if content.Type == gjson.String {
+			total += estimateOpenAICompatTextTokens(content.String())
+			continue
+		}
+		if content.IsArray() {
+			for _, part := range content.Array() {
+				total += estimateOpenAICompatTextTokens(part.Get("text").String())
+			}
+		}
+	}
+	if total > 0 {
+		total += 2
+	}
+	return total
+}
+
+func extractChatCompletionResponseText(resp *apicompat.ChatCompletionsResponse) string {
+	if resp == nil {
+		return ""
+	}
+	var builder strings.Builder
+	for _, choice := range resp.Choices {
+		if len(choice.Message.Content) > 0 {
+			var text string
+			if err := json.Unmarshal(choice.Message.Content, &text); err == nil {
+				builder.WriteString(text)
+			}
+		}
+		builder.WriteString(choice.Message.ReasoningContent)
+	}
+	return builder.String()
+}
+
+func estimateOpenAICompatTextTokens(text string) int {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0
+	}
+	cjk := 0
+	other := 0
+	for _, r := range text {
+		if unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hiragana, r) || unicode.Is(unicode.Katakana, r) || unicode.Is(unicode.Hangul, r) {
+			cjk++
+		} else if !unicode.IsSpace(r) {
+			other++
+		}
+	}
+	tokens := cjk + (other+3)/4
+	if tokens <= 0 {
+		return 1
+	}
+	return tokens
+}
 
 func (s *OpenAIGatewayService) forwardOpenAIResponsesAsChatCompletions(
 	ctx context.Context,
@@ -89,6 +160,11 @@ func (s *OpenAIGatewayService) forwardOpenAIResponsesAsChatCompletions(
 		writeResponsesError(c, http.StatusInternalServerError, "server_error", "Failed to encode upstream request")
 		return nil, fmt.Errorf("marshal chat completions request: %w", err)
 	}
+	if account != nil && account.IsOpenAIApiKey() {
+		if minimizedBody, minimized := minimizeOpenAICompatChatRequestForProvider(account, chatBody); minimized {
+			chatBody = minimizedBody
+		}
+	}
 	logger.LegacyPrintf(
 		"service.openai_gateway",
 		"[OpenAI compat debug] stage=chat_request_body account_id=%d upstream_model=%s body=%s",
@@ -106,6 +182,11 @@ func (s *OpenAIGatewayService) forwardOpenAIResponsesAsChatCompletions(
 		return nil, policyErr
 	}
 	chatBody = updatedBody
+	estimatedPromptTokens := 0
+	if isOpenAICompatMiniMaxProvider(account) {
+		estimatedPromptTokens = estimateOpenAICompatPromptTokensFromChatBody(chatBody)
+		logger.LegacyPrintf("service.openai_gateway", "[Compat billing debug] stage=minimax_prompt_estimate input_tokens=%d", estimatedPromptTokens)
+	}
 
 	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {
@@ -191,9 +272,107 @@ func (s *OpenAIGatewayService) forwardOpenAIResponsesAsChatCompletions(
 	}
 
 	if clientStream {
-		return s.handleResponsesViaChatCompletionsStream(resp, c, account, originalModel, billingModel, upstreamModel, serviceTier, reasoningEffort, startTime)
+		return s.handleResponsesViaChatCompletionsStream(resp, c, account, originalModel, billingModel, upstreamModel, serviceTier, reasoningEffort, startTime, estimatedPromptTokens)
 	}
-	return s.handleResponsesViaChatCompletionsNonStream(resp, c, account, originalModel, billingModel, upstreamModel, serviceTier, reasoningEffort, startTime)
+	return s.handleResponsesViaChatCompletionsNonStream(resp, c, account, originalModel, billingModel, upstreamModel, serviceTier, reasoningEffort, startTime, estimatedPromptTokens)
+}
+
+func minimizeOpenAICompatChatRequestForProvider(account *Account, body []byte) ([]byte, bool) {
+	if account == nil || len(body) == 0 {
+		return body, false
+	}
+	if !isOpenAICompatMiniMaxProvider(account) {
+		return body, false
+	}
+
+	var reqBody map[string]any
+	if err := json.Unmarshal(body, &reqBody); err != nil {
+		return body, false
+	}
+
+	changed := false
+	if model, ok := reqBody["model"].(string); ok {
+		switch strings.TrimSpace(strings.ToLower(model)) {
+		case "minimax-m2.7":
+			reqBody["model"] = "codex-MiniMax-M2.7"
+			changed = true
+		case "minimax-m2.7-highspeed":
+			reqBody["model"] = "codex-MiniMax-M2.7-highspeed"
+			changed = true
+		}
+	}
+	dropKeys := []string{
+		"stream_options",
+		"reasoning_effort",
+		"service_tier",
+		"temperature",
+		"top_p",
+		"tool_choice",
+		"tools",
+		"stop",
+		"instructions",
+	}
+	for _, key := range dropKeys {
+		if _, ok := reqBody[key]; ok {
+			delete(reqBody, key)
+			changed = true
+		}
+	}
+
+	if messages, ok := reqBody["messages"].([]any); ok && len(messages) > 0 {
+		systemTexts := make([]string, 0, 2)
+		kept := make([]any, 0, len(messages))
+		for _, raw := range messages {
+			msg, ok := raw.(map[string]any)
+			if !ok {
+				kept = append(kept, raw)
+				continue
+			}
+			role, _ := msg["role"].(string)
+			role = strings.TrimSpace(strings.ToLower(role))
+			if role == "system" || role == "developer" {
+				if content, ok := msg["content"].(string); ok && strings.TrimSpace(content) != "" {
+					systemTexts = append(systemTexts, strings.TrimSpace(content))
+					changed = true
+					continue
+				}
+			}
+			kept = append(kept, msg)
+		}
+		if len(systemTexts) > 0 {
+			prefix := strings.Join(systemTexts, "\n\n")
+			if len(kept) == 0 {
+				kept = append(kept, map[string]any{
+					"role":    "user",
+					"content": prefix,
+				})
+			} else if first, ok := kept[0].(map[string]any); ok {
+				if role, _ := first["role"].(string); strings.EqualFold(strings.TrimSpace(role), "user") {
+					if content, ok := first["content"].(string); ok {
+						first["content"] = prefix + "\n\n" + content
+						kept[0] = first
+					}
+				} else {
+					kept = append([]any{map[string]any{
+						"role":    "user",
+						"content": prefix,
+					}}, kept...)
+				}
+			}
+			reqBody["messages"] = kept
+		}
+	}
+	if !changed {
+		return body, false
+	}
+
+	minimizedBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return body, false
+	}
+	logger.LegacyPrintf("service.openai_gateway", "[OpenAI compat debug] stage=minimax_request_minimized account_id=%d body=%s",
+		account.ID, truncateForLog(minimizedBody, openAIResponsesCompatLogPreviewMaxBytes))
+	return minimizedBody, true
 }
 
 func (s *OpenAIGatewayService) handleResponsesViaChatCompletionsNonStream(
@@ -206,6 +385,7 @@ func (s *OpenAIGatewayService) handleResponsesViaChatCompletionsNonStream(
 	serviceTier *string,
 	reasoningEffort *string,
 	startTime time.Time,
+	estimatedPromptTokens int,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
@@ -230,6 +410,13 @@ func (s *OpenAIGatewayService) handleResponsesViaChatCompletionsNonStream(
 
 	responsesResp := apicompat.ChatCompletionsToResponsesResponse(&chatResp)
 	responsesResp.Model = originalModel
+	usage := chatUsageToOpenAIUsage(chatResp.Usage)
+	if isOpenAICompatMiniMaxProvider(account) && usage.InputTokens == 0 && usage.OutputTokens == 0 {
+		usage.InputTokens = estimatedPromptTokens
+		usage.OutputTokens = estimateOpenAICompatTextTokens(extractChatCompletionResponseText(&chatResp))
+		logger.LegacyPrintf("service.openai_gateway", "[Compat billing debug] stage=minimax_usage_estimated_nonstream input_tokens=%d output_tokens=%d",
+			usage.InputTokens, usage.OutputTokens)
+	}
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -238,7 +425,7 @@ func (s *OpenAIGatewayService) handleResponsesViaChatCompletionsNonStream(
 
 	return &OpenAIForwardResult{
 		RequestID:       requestID,
-		Usage:           chatUsageToOpenAIUsage(chatResp.Usage),
+		Usage:           usage,
 		Model:           originalModel,
 		BillingModel:    originalModel,
 		UpstreamModel:   upstreamModel,
@@ -259,6 +446,7 @@ func (s *OpenAIGatewayService) handleResponsesViaChatCompletionsStream(
 	serviceTier *string,
 	reasoningEffort *string,
 	startTime time.Time,
+	estimatedPromptTokens int,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
@@ -271,7 +459,7 @@ func (s *OpenAIGatewayService) handleResponsesViaChatCompletionsStream(
 			requestID,
 			contentType,
 		)
-		return s.handleResponsesViaChatCompletionsBufferedAsStream(resp, c, account, originalModel, billingModel, upstreamModel, serviceTier, reasoningEffort, startTime)
+		return s.handleResponsesViaChatCompletionsBufferedAsStream(resp, c, account, originalModel, billingModel, upstreamModel, serviceTier, reasoningEffort, startTime, estimatedPromptTokens)
 	}
 
 	if s.responseHeaderFilter != nil {
@@ -296,6 +484,7 @@ func (s *OpenAIGatewayService) handleResponsesViaChatCompletionsStream(
 	upstreamReasoningChars := 0
 	downstreamEventCount := 0
 	downstreamVisibleChars := 0
+	var upstreamContentBuilder strings.Builder
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -389,6 +578,7 @@ func (s *OpenAIGatewayService) handleResponsesViaChatCompletionsStream(
 		contentDelta, reasoningDelta := openAIResponsesCompatChunkDeltaSummary(&chunk)
 		upstreamContentChars += len(contentDelta)
 		upstreamReasoningChars += len(reasoningDelta)
+		upstreamContentBuilder.WriteString(contentDelta)
 		if !firstUpstreamContentLogged && strings.TrimSpace(contentDelta) != "" {
 			firstUpstreamContentLogged = true
 			logger.LegacyPrintf(
@@ -420,6 +610,12 @@ func (s *OpenAIGatewayService) handleResponsesViaChatCompletionsStream(
 	if state.Usage != nil {
 		usage = responsesUsageToOpenAIUsage(state.Usage)
 	}
+	if isOpenAICompatMiniMaxProvider(account) && usage.InputTokens == 0 && usage.OutputTokens == 0 && upstreamContentBuilder.Len() > 0 {
+		usage.InputTokens = estimatedPromptTokens
+		usage.OutputTokens = estimateOpenAICompatTextTokens(upstreamContentBuilder.String())
+		logger.LegacyPrintf("service.openai_gateway", "[Compat billing debug] stage=minimax_usage_estimated_stream input_tokens=%d output_tokens=%d",
+			usage.InputTokens, usage.OutputTokens)
+	}
 	finalEvents := apicompat.FinalizeChatCompletionsResponsesStream(state)
 	if writeEvents(finalEvents) {
 		return resultWithUsage(), nil
@@ -449,6 +645,7 @@ func (s *OpenAIGatewayService) handleResponsesViaChatCompletionsBufferedAsStream
 	serviceTier *string,
 	reasoningEffort *string,
 	startTime time.Time,
+	estimatedPromptTokens int,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
@@ -473,6 +670,13 @@ func (s *OpenAIGatewayService) handleResponsesViaChatCompletionsBufferedAsStream
 
 	responsesResp := apicompat.ChatCompletionsToResponsesResponse(&chatResp)
 	responsesResp.Model = originalModel
+	usage := chatUsageToOpenAIUsage(chatResp.Usage)
+	if isOpenAICompatMiniMaxProvider(account) && usage.InputTokens == 0 && usage.OutputTokens == 0 {
+		usage.InputTokens = estimatedPromptTokens
+		usage.OutputTokens = estimateOpenAICompatTextTokens(extractChatCompletionResponseText(&chatResp))
+		logger.LegacyPrintf("service.openai_gateway", "[Compat billing debug] stage=minimax_usage_estimated_buffered input_tokens=%d output_tokens=%d",
+			usage.InputTokens, usage.OutputTokens)
+	}
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -520,7 +724,7 @@ func (s *OpenAIGatewayService) handleResponsesViaChatCompletionsBufferedAsStream
 
 	return &OpenAIForwardResult{
 		RequestID:       requestID,
-		Usage:           chatUsageToOpenAIUsage(chatResp.Usage),
+		Usage:           usage,
 		Model:           originalModel,
 		BillingModel:    originalModel,
 		UpstreamModel:   upstreamModel,

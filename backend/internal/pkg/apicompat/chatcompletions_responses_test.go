@@ -612,8 +612,8 @@ func TestResponsesToChatCompletionsRequest_SystemToolAndOutput(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, chatReq.Messages, 4)
 	assert.Equal(t, "gpt-5.3-codex", chatReq.Model)
-	require.NotNil(t, chatReq.MaxTokens)
-	assert.Equal(t, 2048, *chatReq.MaxTokens)
+	require.NotNil(t, chatReq.MaxCompletionTokens)
+	assert.Equal(t, 2048, *chatReq.MaxCompletionTokens)
 	assert.Equal(t, "high", chatReq.ReasoningEffort)
 
 	var system string

@@ -70,3 +70,72 @@ func TestForwardOpenAIResponsesAsChatCompletions_UsesRequestedBillingModel(t *te
 	require.Equal(t, int64(11), gjson.GetBytes(rec.Body.Bytes(), "usage.input_tokens").Int())
 	require.Equal(t, int64(7), gjson.GetBytes(rec.Body.Bytes(), "usage.output_tokens").Int())
 }
+
+func TestMinimizeOpenAICompatChatRequestForProvider_MiniMaxDropsUnsupportedFields(t *testing.T) {
+	account := &Account{
+		ID:       8,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "sk-minimax-test",
+			"base_url": "https://api.minimax.chat",
+		},
+	}
+	body := []byte(`{
+		"model":"minimax-m2.7",
+		"messages":[{"role":"user","content":"hello"}],
+		"stream":true,
+		"stream_options":{"include_usage":true},
+		"reasoning_effort":"high",
+		"service_tier":"priority",
+		"temperature":1,
+		"top_p":1,
+		"tools":[{"type":"function","function":{"name":"x"}}],
+		"tool_choice":"auto",
+		"instructions":"abc"
+	}`)
+
+	minimized, changed := minimizeOpenAICompatChatRequestForProvider(account, body)
+	require.True(t, changed)
+	require.Equal(t, "codex-MiniMax-M2.7", gjson.GetBytes(minimized, "model").String())
+	require.True(t, gjson.GetBytes(minimized, "stream").Bool())
+	require.Equal(t, "hello", gjson.GetBytes(minimized, "messages.0.content").String())
+	require.False(t, gjson.GetBytes(minimized, "stream_options").Exists())
+	require.False(t, gjson.GetBytes(minimized, "reasoning_effort").Exists())
+	require.False(t, gjson.GetBytes(minimized, "service_tier").Exists())
+	require.False(t, gjson.GetBytes(minimized, "temperature").Exists())
+	require.False(t, gjson.GetBytes(minimized, "top_p").Exists())
+	require.False(t, gjson.GetBytes(minimized, "tools").Exists())
+	require.False(t, gjson.GetBytes(minimized, "tool_choice").Exists())
+	require.False(t, gjson.GetBytes(minimized, "instructions").Exists())
+}
+
+func TestMinimizeOpenAICompatChatRequestForProvider_MiniMaxFoldsSystemIntoUser(t *testing.T) {
+	account := &Account{
+		ID:       8,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "sk-minimax-test",
+			"base_url": "https://api.minimax.chat",
+		},
+	}
+	body := []byte(`{
+		"model":"MiniMax-M2.7",
+		"messages":[
+			{"role":"system","content":"system rules"},
+			{"role":"developer","content":"developer rules"},
+			{"role":"user","content":"hello"}
+		],
+		"stream":true,
+		"temperature":1
+	}`)
+
+	minimized, changed := minimizeOpenAICompatChatRequestForProvider(account, body)
+	require.True(t, changed)
+	require.Equal(t, int64(1), gjson.GetBytes(minimized, "messages.#").Int())
+	require.Equal(t, "user", gjson.GetBytes(minimized, "messages.0.role").String())
+	require.Contains(t, gjson.GetBytes(minimized, "messages.0.content").String(), "system rules")
+	require.Contains(t, gjson.GetBytes(minimized, "messages.0.content").String(), "developer rules")
+	require.Contains(t, gjson.GetBytes(minimized, "messages.0.content").String(), "hello")
+}

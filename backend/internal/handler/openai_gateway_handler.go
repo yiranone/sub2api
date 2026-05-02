@@ -397,9 +397,45 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)
 		requestPayloadHash := service.HashUsageRequestPayload(body)
+		logger.LegacyPrintf(
+			"handler.openai_gateway",
+			"[Usage task debug] before_submit path=/responses account_id=%d result_nil=%v request_id=%s model=%s upstream_model=%s",
+			account.ID,
+			result == nil,
+			func() string {
+				if result == nil {
+					return ""
+				}
+				return result.RequestID
+			}(),
+			func() string {
+				if result == nil {
+					return ""
+				}
+				return result.Model
+			}(),
+			func() string {
+				if result == nil {
+					return ""
+				}
+				return result.UpstreamModel
+			}(),
+		)
 
 		// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
 		h.submitUsageRecordTask(func(ctx context.Context) {
+			logger.LegacyPrintf(
+				"handler.openai_gateway",
+				"[Usage task debug] task_started path=/responses account_id=%d result_nil=%v request_id=%s",
+				account.ID,
+				result == nil,
+				func() string {
+					if result == nil {
+						return ""
+					}
+					return result.RequestID
+				}(),
+			)
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 				Result:             result,
 				APIKey:             apiKey,
@@ -771,8 +807,44 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)
 		requestPayloadHash := service.HashUsageRequestPayload(body)
+		logger.LegacyPrintf(
+			"handler.openai_gateway",
+			"[Usage task debug] before_submit path=/v1/messages account_id=%d result_nil=%v request_id=%s model=%s upstream_model=%s",
+			account.ID,
+			result == nil,
+			func() string {
+				if result == nil {
+					return ""
+				}
+				return result.RequestID
+			}(),
+			func() string {
+				if result == nil {
+					return ""
+				}
+				return result.Model
+			}(),
+			func() string {
+				if result == nil {
+					return ""
+				}
+				return result.UpstreamModel
+			}(),
+		)
 
 		h.submitUsageRecordTask(func(ctx context.Context) {
+			logger.LegacyPrintf(
+				"handler.openai_gateway",
+				"[Usage task debug] task_started path=/v1/messages account_id=%d result_nil=%v request_id=%s",
+				account.ID,
+				result == nil,
+				func() string {
+					if result == nil {
+						return ""
+					}
+					return result.RequestID
+				}(),
+			)
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 				Result:             result,
 				APIKey:             apiKey,
