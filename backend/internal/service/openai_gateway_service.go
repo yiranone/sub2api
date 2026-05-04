@@ -2612,7 +2612,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	httpInvalidEncryptedContentRetryTried := false
 	for {
 		// Build upstream request
-		upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+		upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
 		upstreamReq, err := s.buildUpstreamRequest(upstreamCtx, c, account, body, token, reqStream, promptCacheKey, isCodexCLI)
 		releaseUpstreamCtx()
 		if err != nil {
@@ -2865,7 +2865,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		return nil, err
 	}
 
-	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
 	upstreamReq, err := s.buildUpstreamRequestOpenAIPassthrough(upstreamCtx, c, account, body, token)
 	releaseUpstreamCtx()
 	if err != nil {
@@ -5066,8 +5066,35 @@ type OpenAIRecordUsageInput struct {
 // RecordUsage records usage and deducts balance
 func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRecordUsageInput) error {
 	result := input.Result
+	if input != nil && result != nil {
+		logger.LegacyPrintf(
+			"service.openai_gateway",
+			"[Compat billing debug] stage=record_usage_entry model=%s billing_model=%s upstream_model=%s input_tokens=%d output_tokens=%d cache_create=%d cache_read=%d image_count=%d",
+			strings.TrimSpace(result.Model),
+			strings.TrimSpace(result.BillingModel),
+			strings.TrimSpace(result.UpstreamModel),
+			result.Usage.InputTokens,
+			result.Usage.OutputTokens,
+			result.Usage.CacheCreationInputTokens,
+			result.Usage.CacheReadInputTokens,
+			result.ImageCount,
+		)
+	}
 	if s.rateLimitService != nil && input != nil && input.Account != nil && input.Account.Platform == PlatformOpenAI {
 		s.rateLimitService.ResetOpenAI403Counter(ctx, input.Account.ID)
+	}
+
+	// 跳过所有 token 均为零的用量记录——上游未返回 usage 时不应写入数据库
+	if result.Usage.InputTokens == 0 && result.Usage.OutputTokens == 0 &&
+		result.Usage.CacheCreationInputTokens == 0 && result.Usage.CacheReadInputTokens == 0 &&
+		result.Usage.ImageOutputTokens == 0 && result.ImageCount == 0 {
+		logger.LegacyPrintf(
+			"service.openai_gateway",
+			"[Compat billing debug] stage=skip_zero_usage model=%s upstream_model=%s",
+			strings.TrimSpace(result.Model),
+			strings.TrimSpace(result.UpstreamModel),
+		)
+		return nil
 	}
 
 	apiKey := input.APIKey
@@ -5116,13 +5143,44 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if input.BillingModelSource == BillingModelSourceRequested && input.OriginalModel != "" {
 		billingModel = input.OriginalModel
 	}
+	logger.LegacyPrintf(
+		"service.openai_gateway",
+		"[Compat billing debug] stage=pre_cost billing_source=%s original_model=%s channel_mapped_model=%s result_model=%s upstream_model=%s billing_model=%s input_tokens=%d output_tokens=%d cache_create=%d cache_read=%d image_count=%d",
+		strings.TrimSpace(input.BillingModelSource),
+		strings.TrimSpace(input.OriginalModel),
+		strings.TrimSpace(input.ChannelMappedModel),
+		strings.TrimSpace(result.Model),
+		strings.TrimSpace(result.UpstreamModel),
+		strings.TrimSpace(billingModel),
+		result.Usage.InputTokens,
+		result.Usage.OutputTokens,
+		result.Usage.CacheCreationInputTokens,
+		result.Usage.CacheReadInputTokens,
+		result.ImageCount,
+	)
 	serviceTier := ""
 	if result.ServiceTier != nil {
 		serviceTier = strings.TrimSpace(*result.ServiceTier)
 	}
 	cost, err = s.calculateOpenAIRecordUsageCost(ctx, result, apiKey, billingModel, multiplier, tokens, serviceTier)
 	if err != nil {
+		logger.LegacyPrintf(
+			"service.openai_gateway",
+			"[Compat billing debug] stage=cost_error billing_model=%s err=%v",
+			strings.TrimSpace(billingModel),
+			err,
+		)
 		cost = &CostBreakdown{ActualCost: 0}
+	}
+	if cost != nil {
+		logger.LegacyPrintf(
+			"service.openai_gateway",
+			"[Compat billing debug] stage=post_cost billing_model=%s actual_cost=%0.10f total_cost=%0.10f billing_mode=%s",
+			strings.TrimSpace(billingModel),
+			cost.ActualCost,
+			cost.TotalCost,
+			strings.TrimSpace(cost.BillingMode),
+		)
 	}
 
 	// Determine billing type
@@ -6185,20 +6243,4 @@ func normalizeOpenAIReasoningEffort(raw string) string {
 		// Only store known effort levels for now to keep UI consistent.
 		return ""
 	}
-}
-
-func buildOpenAIChatCompletionsURL(base string) string {
-	normalized := strings.TrimRight(strings.TrimSpace(base), "/")
-	log.Printf("base: %v, normalized: %v", base, normalized)
-	if strings.HasSuffix(normalized, "/chat/completions") {
-		return normalized
-	}
-	if strings.HasSuffix(normalized, "/v1") {
-		return normalized + "/chat/completions"
-	}
-
-	if strings.HasSuffix(normalized, "/v3") {
-		return normalized + "/chat/completions"
-	}
-	return normalized + "/v1/chat/completions"
 }
