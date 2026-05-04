@@ -6244,19 +6244,3 @@ func normalizeOpenAIReasoningEffort(raw string) string {
 		return ""
 	}
 }
-
-func buildOpenAIChatCompletionsURL(base string) string {
-	normalized := strings.TrimRight(strings.TrimSpace(base), "/")
-	log.Printf("base: %v, normalized: %v", base, normalized)
-	if strings.HasSuffix(normalized, "/chat/completions") {
-		return normalized
-	}
-	if strings.HasSuffix(normalized, "/v1") {
-		return normalized + "/chat/completions"
-	}
-
-	if strings.HasSuffix(normalized, "/v3") {
-		return normalized + "/chat/completions"
-	}
-	return normalized + "/v1/chat/completions"
-}
