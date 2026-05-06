@@ -4829,6 +4829,9 @@ func buildOpenAIResponsesURL(base string) string {
 	if strings.HasSuffix(normalized, "/v1") {
 		return normalized + "/responses"
 	}
+	if strings.HasSuffix(normalized, "/v3") {
+		return normalized + "/responses"
+	}
 	return normalized + "/v1/responses"
 }
 
