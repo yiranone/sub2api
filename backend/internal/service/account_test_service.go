@@ -558,7 +558,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
 		}
 		if account.IsOpenAIChatCompletionsMode() {
-			apiURL = strings.TrimSuffix(normalizedBaseURL, "/") + "/chat/completions"
+			apiURL = buildOpenAIChatCompletionsURL(normalizedBaseURL)
 		} else {
 			apiURL = strings.TrimSuffix(normalizedBaseURL, "/") + "/responses"
 		}
