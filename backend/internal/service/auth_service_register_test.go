@@ -305,6 +305,16 @@ func TestAuthService_Register_ReservedEmail(t *testing.T) {
 	require.ErrorIs(t, err, ErrEmailReserved)
 }
 
+func TestAuthService_Register_InvalidGmailAddress(t *testing.T) {
+	repo := &userRepoStub{}
+	service := newAuthService(repo, map[string]string{
+		SettingKeyRegistrationEnabled: "true",
+	}, nil)
+
+	_, _, err := service.Register(context.Background(), "user.name@gmail.com", "password")
+	require.ErrorIs(t, err, ErrInvalidGmailAddress)
+}
+
 func TestAuthService_Register_EmailSuffixNotAllowed(t *testing.T) {
 	repo := &userRepoStub{}
 	service := newAuthService(repo, map[string]string{

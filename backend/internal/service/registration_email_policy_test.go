@@ -8,6 +8,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestValidateRegistrationGmailEmail(t *testing.T) {
+	require.NoError(t, ValidateRegistrationGmailEmail("user_name@example.com"))
+	require.NoError(t, ValidateRegistrationGmailEmail("not-an-email"))
+	require.NoError(t, ValidateRegistrationGmailEmail("user@localhost"))
+	require.NoError(t, ValidateRegistrationGmailEmail("User_123@gmail.com"))
+	require.NoError(t, ValidateRegistrationGmailEmail("user_name@gmail.com"))
+
+	require.ErrorIs(t, ValidateRegistrationGmailEmail("User.Name@gmail.com"), ErrInvalidGmailAddress)
+	require.ErrorIs(t, ValidateRegistrationGmailEmail("user+tag@gmail.com"), ErrInvalidGmailAddress)
+}
+
 func TestNormalizeRegistrationEmailSuffixWhitelist(t *testing.T) {
 	got, err := NormalizeRegistrationEmailSuffixWhitelist([]string{"example.com", "@EXAMPLE.COM", " @foo.bar "})
 	require.NoError(t, err)

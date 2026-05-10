@@ -11,6 +11,20 @@ var registrationEmailDomainPattern = regexp.MustCompile(
 	`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`,
 )
 
+var gmailRegistrationLocalPartPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+
+// ValidateRegistrationGmailEmail validates Gmail-specific registration rules only.
+func ValidateRegistrationGmailEmail(email string) error {
+	local, domain, ok := splitEmailForPolicy(email)
+	if !ok || domain != "gmail.com" {
+		return nil
+	}
+	if !gmailRegistrationLocalPartPattern.MatchString(local) {
+		return ErrInvalidGmailAddress
+	}
+	return nil
+}
+
 // RegistrationEmailSuffix extracts normalized suffix in "@domain" form.
 func RegistrationEmailSuffix(email string) string {
 	_, domain, ok := splitEmailForPolicy(email)
