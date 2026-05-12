@@ -332,6 +332,104 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_RejectsNonImageModel(t *te
 	require.ErrorContains(t, err, `images endpoint requires an image model, got "gpt-5.4"`)
 }
 
+func TestOpenAIGatewayServiceForwardImages_APIKeyMiniMaxMappedModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-image-1","prompt":"draw a cat","response_format":"b64_json"}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+	require.NoError(t, err)
+
+	upstream := &httpUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type": []string{"application/json"},
+			},
+			Body: io.NopCloser(strings.NewReader(`{"data":{"image_base64":"ZmluYWw="}}`)),
+		},
+	}
+	svc.httpUpstream = upstream
+	account := &Account{
+		ID:          6,
+		Name:        "minimax-image",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "test-api-key",
+			"base_url": "https://api.minimaxi.com",
+			"model_mapping": map[string]any{
+				"gpt-image-1": "image-01",
+			},
+		},
+	}
+
+	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "gpt-image-1", result.Model)
+	require.Equal(t, "image-01", result.UpstreamModel)
+	require.Equal(t, 1, result.ImageCount)
+	require.Equal(t, "https://api.minimaxi.com/v1/image_generation", upstream.lastReq.URL.String())
+	require.Equal(t, "image-01", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Equal(t, "draw a cat", gjson.GetBytes(upstream.lastBody, "prompt").String())
+	require.Equal(t, "ZmluYWw=", gjson.GetBytes(rec.Body.Bytes(), "data.0.b64_json").String())
+}
+
+func TestOpenAIGatewayServiceForwardImages_APIKeyMiniMaxURLResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-image-1","prompt":"draw a cat","response_format":"b64_json"}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+	require.NoError(t, err)
+
+	upstream := &httpUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type": []string{"application/json"},
+			},
+			Body: io.NopCloser(strings.NewReader(`{"data":{"image_urls":["https://cdn.example.com/generated.png"]}}`)),
+		},
+	}
+	svc.httpUpstream = upstream
+	account := &Account{
+		ID:          7,
+		Name:        "minimax-image",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "test-api-key",
+			"base_url": "https://api.minimaxi.com",
+			"model_mapping": map[string]any{
+				"gpt-image-1": "image-01",
+			},
+		},
+	}
+
+	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 1, result.ImageCount)
+	require.Equal(t, "https://cdn.example.com/generated.png", gjson.GetBytes(rec.Body.Bytes(), "data.0.url").String())
+	require.False(t, gjson.GetBytes(rec.Body.Bytes(), "data.0.b64_json").Exists())
+}
+
 func TestOpenAIGatewayServiceParseOpenAIImagesRequest_JSONEditURLs(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{

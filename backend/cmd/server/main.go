@@ -75,7 +75,7 @@ func main() {
 		}
 		return
 	}
-
+	log.Printf("---setup.NeedsSetup(): %v, setup.AutoSetupEnabled(): %v", setup.NeedsSetup(), setup.AutoSetupEnabled())
 	// Check if setup is needed
 	if setup.NeedsSetup() {
 		// Check if auto-setup is enabled (for Docker deployment)

@@ -37,6 +37,7 @@ import (
 	gocache "github.com/patrickmn/go-cache"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+	"go.uber.org/zap"
 	"golang.org/x/sync/singleflight"
 
 	"github.com/gin-gonic/gin"
@@ -571,6 +572,342 @@ type GatewayService struct {
 	debugGatewayBodyFile  atomic.Pointer[os.File] // non-nil when SUB2API_DEBUG_GATEWAY_BODY is set
 	tlsFPProfileService   *TLSFingerprintProfileService
 	balanceNotifyService  *BalanceNotifyService
+	openAIGateway         *openAIGatewayForwarder // MiniMax 等不支持 Responses API 的第三方上游 CC 转发
+}
+
+// openAIGatewayForwarder 是 OpenAIGatewayService 中 forwardResponsesAsRawChatCompletions 的最小化版本，
+// 专用于 MiniMax 等不支持 /v1/responses 的第三方兼容上游。
+// 不依赖 GatewayService 全部字段，仅需要 httpUpstream 和 config。
+type openAIGatewayForwarder struct {
+	httpUpstream HTTPUpstream
+	cfg          *config.Config
+}
+
+func (f *openAIGatewayForwarder) forwardResponsesAsRawChatCompletions(
+	ctx context.Context, c *gin.Context, account *Account, body []byte, originalModel string, startTime time.Time,
+) (*OpenAIForwardResult, error) {
+	var reqBody map[string]any
+	if err := json.Unmarshal(body, &reqBody); err != nil {
+		return nil, fmt.Errorf("parse responses body for CC conversion: %w", err)
+	}
+
+	model := originalModel
+	if m, ok := reqBody["model"].(string); ok && m != "" {
+		model = m
+	}
+
+	clientWantsStream := gjson.GetBytes(body, "stream").Bool()
+
+	// Convert Responses input array to Chat Completions messages
+	messages := []any{}
+	if input, ok := reqBody["input"].([]any); ok {
+		for _, item := range input {
+			if itemMap, ok := item.(map[string]any); ok {
+				msg := map[string]any{}
+				if role, ok := itemMap["role"].(string); ok {
+					if role == "developer" {
+						msg["role"] = "system"
+					} else {
+						msg["role"] = role
+					}
+				}
+				if content, ok := itemMap["content"].([]any); ok {
+					var textContent string
+					for _, c := range content {
+						if cMap, ok := c.(map[string]any); ok {
+							if t, ok := cMap["type"].(string); ok && t == "input_text" {
+								if text, ok := cMap["text"].(string); ok {
+									textContent += text
+								}
+							}
+						}
+					}
+					msg["content"] = textContent
+				}
+				if len(msg) > 0 {
+					messages = append(messages, msg)
+				}
+			}
+		}
+	}
+
+	logger.L().Info("openai.forward_responses_cc",
+		zap.Int64("account_id", account.ID),
+		zap.String("model", model),
+		zap.Int("messages_count", len(messages)),
+		zap.Bool("client_wants_stream", clientWantsStream),
+	)
+
+	// Build CC body with stream=false
+	ccBody := map[string]any{
+		"model":    model,
+		"messages": messages,
+		"stream":   false,
+	}
+	ccBodyBytes, _ := json.Marshal(ccBody)
+
+	apiKey := account.GetOpenAIApiKey()
+	if apiKey == "" {
+		return nil, fmt.Errorf("account %d missing api_key", account.ID)
+	}
+
+	baseURL := account.GetOpenAIBaseURL()
+	if baseURL == "" {
+		baseURL = "https://api.openai.com"
+	}
+	validatedURL, err := f.validateUpstreamBaseURL(baseURL)
+	if err != nil {
+		logger.L().Warn("openai.forward_responses_cc: invalid base_url",
+			zap.String("base_url", baseURL),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("invalid base_url: %w", err)
+	}
+	targetURL := f.buildOpenAIChatCompletionsURL(validatedURL)
+
+	logger.L().Info("openai.forward_responses_cc: upstream",
+		zap.Int64("account_id", account.ID),
+		zap.String("target_url", targetURL),
+	)
+
+	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, clientWantsStream)
+	req, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, targetURL, bytes.NewReader(ccBodyBytes))
+	releaseUpstreamCtx()
+	if err != nil {
+		return nil, fmt.Errorf("build upstream request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	proxyURL := ""
+	if account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+
+	resp, err := f.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+	if err != nil {
+		logger.L().Warn("openai.forward_responses_cc: upstream request failed", zap.Error(err))
+		safeErr := sanitizeUpstreamErrorMessage(err.Error())
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error": gin.H{
+				"type":    "upstream_error",
+				"message": "Upstream request failed",
+			},
+		})
+		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		logger.L().Warn("openai.forward_responses_cc: read body failed",
+			zap.Int("status", resp.StatusCode),
+			zap.Error(err),
+		)
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error": gin.H{
+				"type":    "upstream_error",
+				"message": "Failed to read upstream response",
+			},
+		})
+		return nil, fmt.Errorf("read upstream body: %w", err)
+	}
+
+	logger.L().Info("openai.forward_responses_cc: upstream response",
+		zap.Int64("account_id", account.ID),
+		zap.Int("status", resp.StatusCode),
+		zap.Int("body_len", len(respBody)),
+	)
+
+	if resp.StatusCode >= 400 {
+		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		if upstreamMsg == "" {
+			upstreamMsg = fmt.Sprintf("Upstream error: %d", resp.StatusCode)
+		}
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error": gin.H{
+				"type":    "upstream_error",
+				"message": upstreamMsg,
+			},
+		})
+		return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
+	}
+
+	var ccResp map[string]any
+	if err := json.Unmarshal(respBody, &ccResp); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error": gin.H{
+				"type":    "upstream_error",
+				"message": "Failed to parse upstream response",
+			},
+		})
+		return nil, fmt.Errorf("parse CC response: %w", err)
+	}
+
+	if clientWantsStream {
+		return f.ccJSONToSSEStream(ctx, c, ccResp, model, startTime)
+	}
+
+	c.Header("Content-Type", "application/json")
+	c.Writer.WriteHeader(http.StatusOK)
+	c.Writer.Write(respBody)
+
+	var usage OpenAIUsage
+	if usageData, ok := ccResp["usage"].(map[string]any); ok {
+		if pt, ok := usageData["prompt_tokens"].(float64); ok {
+			usage.InputTokens = int(pt)
+		}
+		if ct, ok := usageData["completion_tokens"].(float64); ok {
+			usage.OutputTokens = int(ct)
+		}
+	}
+
+	return &OpenAIForwardResult{
+		Model:        model,
+		BillingModel: model,
+		Usage:        usage,
+		Stream:       false,
+		Duration:     time.Since(startTime),
+	}, nil
+}
+
+func (f *openAIGatewayForwarder) validateUpstreamBaseURL(raw string) (string, error) {
+	if f.cfg != nil && !f.cfg.Security.URLAllowlist.Enabled {
+		normalized, err := urlvalidator.ValidateURLFormat(raw, f.cfg.Security.URLAllowlist.AllowInsecureHTTP)
+		if err != nil {
+			return "", fmt.Errorf("invalid base_url: %w", err)
+		}
+		return normalized, nil
+	}
+	normalized, err := urlvalidator.ValidateHTTPSURL(raw, urlvalidator.ValidationOptions{
+		AllowedHosts:     f.cfg.Security.URLAllowlist.UpstreamHosts,
+		RequireAllowlist: true,
+		AllowPrivate:     f.cfg.Security.URLAllowlist.AllowPrivateHosts,
+	})
+	if err != nil {
+		return "", fmt.Errorf("invalid base_url: %w", err)
+	}
+	return normalized, nil
+}
+
+func (f *openAIGatewayForwarder) buildOpenAIChatCompletionsURL(base string) string {
+	normalized := strings.TrimRight(strings.TrimSpace(base), "/")
+	if strings.HasSuffix(normalized, "/chat/completions") {
+		return normalized
+	}
+	if strings.HasSuffix(normalized, "/v1") {
+		return normalized + "/chat/completions"
+	}
+	if strings.HasSuffix(normalized, "/v3") {
+		return normalized + "/chat/completions"
+	}
+	return normalized + "/v1/chat/completions"
+}
+
+func (f *openAIGatewayForwarder) ccJSONToSSEStream(
+	ctx context.Context, c *gin.Context, ccResp map[string]any, model string, startTime time.Time,
+) (*OpenAIForwardResult, error) {
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.WriteHeader(http.StatusOK)
+
+	firstTokenMs := int(time.Since(startTime).Milliseconds())
+	firstTokenMsPtr := &firstTokenMs
+
+	var usage OpenAIUsage
+
+	// Send finish_reason chunk
+	if choices, ok := ccResp["choices"].([]any); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]any); ok {
+			if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" {
+				chunk := map[string]any{
+					"id":      ccResp["id"],
+					"object":  "chat.completion.chunk",
+					"created": ccResp["created"],
+					"model":   ccResp["model"],
+					"choices": []map[string]any{{
+						"index":        0,
+						"delta":        map[string]any{},
+						"finish_reason": finishReason,
+					}},
+				}
+				chunkBytes, _ := json.Marshal(chunk)
+				c.Writer.Write([]byte("data: "))
+				c.Writer.Write(chunkBytes)
+				c.Writer.Write([]byte("\n\n"))
+			}
+		}
+	}
+
+	// Send content delta
+	if choices, ok := ccResp["choices"].([]any); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]any); ok {
+			if message, ok := choice["message"].(map[string]any); ok {
+				if text, ok := message["content"].(string); ok && text != "" {
+					chunk := map[string]any{
+						"id":      ccResp["id"],
+						"object":  "chat.completion.chunk",
+						"created": ccResp["created"],
+						"model":   ccResp["model"],
+						"choices": []map[string]any{{
+							"index": 0,
+							"delta": map[string]any{
+								"content": text,
+							},
+						}},
+					}
+					chunkBytes, _ := json.Marshal(chunk)
+					c.Writer.Write([]byte("data: "))
+					c.Writer.Write(chunkBytes)
+					c.Writer.Write([]byte("\n\n"))
+				}
+			}
+		}
+	}
+
+	// Extract usage and send usage chunk
+	if usageData, ok := ccResp["usage"].(map[string]any); ok {
+		if pt, ok := usageData["prompt_tokens"].(float64); ok {
+			usage.InputTokens = int(pt)
+		}
+		if ct, ok := usageData["completion_tokens"].(float64); ok {
+			usage.OutputTokens = int(ct)
+		}
+		usageChunk := map[string]any{
+			"id":      ccResp["id"],
+			"object":  "chat.completion.chunk",
+			"created": ccResp["created"],
+			"model":   ccResp["model"],
+			"choices": []map[string]any{{
+				"index": 0,
+				"delta": map[string]any{},
+			}},
+			"usage": map[string]any{
+				"prompt_tokens":     usage.InputTokens,
+				"completion_tokens": usage.OutputTokens,
+				"total_tokens":      usage.InputTokens + usage.OutputTokens,
+			},
+		}
+		usageBytes, _ := json.Marshal(usageChunk)
+		c.Writer.Write([]byte("data: "))
+		c.Writer.Write(usageBytes)
+		c.Writer.Write([]byte("\n\n"))
+	}
+
+	c.Writer.Write([]byte("data: [DONE]\n\n"))
+	c.Writer.Flush()
+
+	return &OpenAIForwardResult{
+		Model:        model,
+		BillingModel: model,
+		Usage:        usage,
+		Stream:       true,
+		Duration:     time.Since(startTime),
+		FirstTokenMs: firstTokenMsPtr,
+	}, nil
 }
 
 // NewGatewayService creates a new GatewayService
@@ -636,6 +973,13 @@ func NewGatewayService(
 		channelService:       channelService,
 		resolver:             resolver,
 		balanceNotifyService: balanceNotifyService,
+	}
+	// MiniMax 等第三方兼容上游不支持 Responses API 的轻量转发器。
+	// forwardResponsesAsRawChatCompletions 只需要 httpUpstream + cfg，
+	// 不需要 GatewayService 的全部依赖。
+	svc.openAIGateway = &openAIGatewayForwarder{
+		httpUpstream: svc.httpUpstream,
+		cfg:          cfg,
 	}
 	svc.userGroupRateResolver = newUserGroupRateResolver(
 		userGroupRateRepo,
@@ -4311,6 +4655,16 @@ func (s *GatewayService) shouldInjectAnthropicCacheTTL1h(ctx context.Context, ac
 		return false
 	}
 	return s.settingService.IsAnthropicCacheTTL1hInjectionEnabled(ctx)
+}
+
+// ForwardOpenAIResponsesAsRawCC 将 OpenAI Responses API 请求转换为 Chat Completions 格式，
+// 转发到第三方上游（如 MiniMax）的 /v1/chat/completions 端点。
+// 用于上游不支持 /v1/responses 的情况。
+func (s *GatewayService) ForwardOpenAIResponsesAsRawCC(ctx context.Context, c *gin.Context, account *Account, body []byte, model string, startTime time.Time) (*OpenAIForwardResult, error) {
+	if s.openAIGateway == nil {
+		return nil, fmt.Errorf("openAIGateway not initialized")
+	}
+	return s.openAIGateway.forwardResponsesAsRawChatCompletions(ctx, c, account, body, model, startTime)
 }
 
 // Forward 转发请求到Claude API

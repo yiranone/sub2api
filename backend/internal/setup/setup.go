@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -324,7 +325,7 @@ func Install(cfg *SetupConfig) error {
 // createInstallLock creates a lock file to prevent re-installation attacks
 func createInstallLock() error {
 	content := fmt.Sprintf("installed_at=%s\n", time.Now().UTC().Format(time.RFC3339))
-	return os.WriteFile(GetInstallLockPath(), []byte(content), 0400) // Read-only for owner
+	return os.WriteFile(GetInstallLockPath(), []byte(content), 0o400) // Read-only for owner
 }
 
 func initializeDatabase(cfg *SetupConfig) error {
@@ -333,7 +334,8 @@ func initializeDatabase(cfg *SetupConfig) error {
 		cfg.Database.Host, cfg.Database.Port, cfg.Database.User,
 		cfg.Database.Password, cfg.Database.DBName, cfg.Database.SSLMode,
 	)
-
+	log.Printf("dsn: %v", dsn)
+	log.Printf("cfg.Admin.Password: %v", cfg.Admin.Password)
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return err
@@ -357,6 +359,7 @@ func createAdminUser(cfg *SetupConfig) (bool, string, error) {
 		cfg.Database.Password, cfg.Database.DBName, cfg.Database.SSLMode,
 	)
 
+	log.Printf("dsn: %v", dsn)
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return false, "", err
@@ -394,6 +397,7 @@ func createAdminUser(cfg *SetupConfig) (bool, string, error) {
 		fmt.Printf("Generated admin password (one-time): %s\n", cfg.Admin.Password)
 		fmt.Println("IMPORTANT: Save this password! It will not be shown again.")
 	}
+	log.Printf("cfg.Admin.Password: %v", cfg.Admin.Password)
 
 	admin := &service.User{
 		Email:       cfg.Admin.Email,
@@ -492,7 +496,7 @@ func writeConfigFile(cfg *SetupConfig) error {
 		return err
 	}
 
-	return os.WriteFile(GetConfigFilePath(), data, 0600)
+	return os.WriteFile(GetConfigFilePath(), data, 0o600)
 }
 
 func generateSecret(length int) (string, error) {

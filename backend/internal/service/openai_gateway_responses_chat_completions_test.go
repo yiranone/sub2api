@@ -71,6 +71,117 @@ func TestForwardOpenAIResponsesAsChatCompletions_UsesRequestedBillingModel(t *te
 	require.Equal(t, int64(7), gjson.GetBytes(rec.Body.Bytes(), "usage.output_tokens").Int())
 }
 
+func TestForwardResponsesAsRawChatCompletions_AppliesModelMappingForMiniMax(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}],"stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(string(body)))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(`{
+			"id":"chatcmpl_minimax_1",
+			"object":"chat.completion",
+			"created":1777550000,
+			"model":"codex-MiniMax-M2.7",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}
+		}`)),
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:          9,
+		Name:        "minimax-openai-compatible",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-minimax-test",
+			"base_url": "https://api.minimax.chat",
+			"model_mapping": map[string]any{
+				"gpt-5.5": "codex-MiniMax-M2.7",
+			},
+		},
+		Extra: map[string]any{
+			"openai_responses_supported": false,
+		},
+	}
+
+	result, err := svc.forwardResponsesAsRawChatCompletions(context.Background(), c, account, body, "gpt-5.5", time.Now())
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "gpt-5.5", result.Model)
+	require.Equal(t, "gpt-5.5", result.BillingModel)
+	require.Equal(t, "codex-MiniMax-M2.7", result.UpstreamModel)
+	require.Equal(t, "codex-MiniMax-M2.7", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Equal(t, "hello", gjson.GetBytes(upstream.lastBody, "messages.0.content").String())
+}
+
+func TestForwardResponsesAsRawChatCompletions_StreamReturnsResponsesEvents(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}],"stream":true}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(string(body)))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(`{
+			"id":"chatcmpl_minimax_stream_1",
+			"object":"chat.completion",
+			"created":1777550000,
+			"model":"codex-MiniMax-M2.7",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}
+		}`)),
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:          10,
+		Name:        "minimax-openai-compatible",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-minimax-test",
+			"base_url": "https://api.minimax.chat",
+			"model_mapping": map[string]any{
+				"gpt-5.5": "codex-MiniMax-M2.7",
+			},
+		},
+		Extra: map[string]any{
+			"openai_responses_supported": false,
+		},
+	}
+
+	result, err := svc.forwardResponsesAsRawChatCompletions(context.Background(), c, account, body, "gpt-5.5", time.Now())
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.Stream)
+	require.Contains(t, rec.Body.String(), "event: response.created")
+	require.Contains(t, rec.Body.String(), "event: response.output_text.delta")
+	require.Contains(t, rec.Body.String(), "event: response.completed")
+	require.Contains(t, rec.Body.String(), "data: [DONE]")
+	require.NotContains(t, rec.Body.String(), "chat.completion.chunk")
+}
+
 func TestMinimizeOpenAICompatChatRequestForProvider_MiniMaxDropsUnsupportedFields(t *testing.T) {
 	account := &Account{
 		ID:       8,

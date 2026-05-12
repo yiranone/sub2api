@@ -77,3 +77,41 @@ func TestGatewayRoutesOpenAIImagesPathsAreRegistered(t *testing.T) {
 		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should hit OpenAI images handler", path)
 	}
 }
+
+func TestGatewayRoutesOpenAIVideosPathsAreRegistered(t *testing.T) {
+	router := newGatewayRoutesTestRouter()
+
+	for _, path := range []string{
+		"/v1/videos/generations",
+		"/videos/generations",
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"gpt-video-1","prompt":"make a short video"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should hit OpenAI videos handler", path)
+	}
+}
+
+func TestGatewayRoutesOpenAIAudioMusicPathsAreRegistered(t *testing.T) {
+	router := newGatewayRoutesTestRouter()
+
+	cases := []struct {
+		path string
+		body string
+	}{
+		{"/v1/audio/speech", `{"model":"gpt-4o-mini-tts","input":"hello"}`},
+		{"/audio/speech", `{"model":"gpt-4o-mini-tts","input":"hello"}`},
+		{"/v1/music/generations", `{"model":"gpt-music-1","prompt":"short piano theme"}`},
+		{"/music/generations", `{"model":"gpt-music-1","prompt":"short piano theme"}`},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should hit OpenAI audio/music handler", tc.path)
+	}
+}

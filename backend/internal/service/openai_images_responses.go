@@ -21,6 +21,7 @@ import (
 
 type openAIResponsesImageResult struct {
 	Result        string
+	URL           string
 	RevisedPrompt string
 	OutputFormat  string
 	Size          string
@@ -32,6 +33,9 @@ type openAIResponsesImageResult struct {
 func openAIResponsesImageResultKey(itemID string, result openAIResponsesImageResult) string {
 	if strings.TrimSpace(result.Result) != "" {
 		return strings.TrimSpace(result.OutputFormat) + "|" + strings.TrimSpace(result.Result)
+	}
+	if strings.TrimSpace(result.URL) != "" {
+		return "url:" + strings.TrimSpace(result.URL)
 	}
 	return "item:" + strings.TrimSpace(itemID)
 }
@@ -143,12 +147,20 @@ func buildOpenAIImagesStreamCompletedPayload(
 		createdAt = time.Now().Unix()
 	}
 
-	payload := []byte(`{"type":"","created_at":0,"b64_json":""}`)
+	payload := []byte(`{"type":"","created_at":0}`)
 	payload, _ = sjson.SetBytes(payload, "type", eventType)
 	payload, _ = sjson.SetBytes(payload, "created_at", createdAt)
-	payload, _ = sjson.SetBytes(payload, "b64_json", img.Result)
-	if strings.EqualFold(strings.TrimSpace(responseFormat), "url") {
-		payload, _ = sjson.SetBytes(payload, "url", "data:"+openAIImageOutputMIMEType(img.OutputFormat)+";base64,"+img.Result)
+	format := strings.ToLower(strings.TrimSpace(responseFormat))
+	if format == "url" {
+		if strings.TrimSpace(img.URL) != "" {
+			payload, _ = sjson.SetBytes(payload, "url", strings.TrimSpace(img.URL))
+		} else if strings.TrimSpace(img.Result) != "" {
+			payload, _ = sjson.SetBytes(payload, "url", "data:"+openAIImageOutputMIMEType(img.OutputFormat)+";base64,"+img.Result)
+		}
+	} else if strings.TrimSpace(img.Result) != "" {
+		payload, _ = sjson.SetBytes(payload, "b64_json", img.Result)
+	} else if strings.TrimSpace(img.URL) != "" {
+		payload, _ = sjson.SetBytes(payload, "url", strings.TrimSpace(img.URL))
 	}
 	if img.Background != "" {
 		payload, _ = sjson.SetBytes(payload, "background", img.Background)
@@ -459,9 +471,15 @@ func buildOpenAIImagesAPIResponse(
 	for _, img := range results {
 		item := []byte(`{}`)
 		if format == "url" {
-			item, _ = sjson.SetBytes(item, "url", "data:"+openAIImageOutputMIMEType(img.OutputFormat)+";base64,"+img.Result)
-		} else {
+			if strings.TrimSpace(img.URL) != "" {
+				item, _ = sjson.SetBytes(item, "url", strings.TrimSpace(img.URL))
+			} else if strings.TrimSpace(img.Result) != "" {
+				item, _ = sjson.SetBytes(item, "url", "data:"+openAIImageOutputMIMEType(img.OutputFormat)+";base64,"+img.Result)
+			}
+		} else if strings.TrimSpace(img.Result) != "" {
 			item, _ = sjson.SetBytes(item, "b64_json", img.Result)
+		} else if strings.TrimSpace(img.URL) != "" {
+			item, _ = sjson.SetBytes(item, "url", strings.TrimSpace(img.URL))
 		}
 		if img.RevisedPrompt != "" {
 			item, _ = sjson.SetBytes(item, "revised_prompt", img.RevisedPrompt)

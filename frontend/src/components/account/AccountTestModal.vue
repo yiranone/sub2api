@@ -153,6 +153,42 @@
         </div>
       </div>
 
+      <div v-if="generatedVideos.length > 0" class="space-y-2">
+        <div class="text-xs font-medium text-gray-600 dark:text-gray-300">
+          Video Preview
+        </div>
+        <div class="space-y-3">
+          <div
+            v-for="(video, index) in generatedVideos"
+            :key="`${video.url}-${index}`"
+            class="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm dark:border-dark-500 dark:bg-dark-700"
+          >
+            <video :src="video.url" controls class="max-h-[420px] w-full bg-black" />
+            <div class="border-t border-gray-100 px-3 py-1.5 text-xs text-gray-500 dark:border-dark-500 dark:text-gray-300">
+              {{ video.mimeType || 'video/mp4' }}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="generatedAudios.length > 0" class="space-y-2">
+        <div class="text-xs font-medium text-gray-600 dark:text-gray-300">
+          Audio Preview
+        </div>
+        <div class="space-y-2">
+          <div
+            v-for="(audio, index) in generatedAudios"
+            :key="`${audio.url}-${index}`"
+            class="rounded-xl border border-gray-200 bg-white p-3 shadow-sm dark:border-dark-500 dark:bg-dark-700"
+          >
+            <audio :src="audio.url" controls class="w-full" />
+            <div class="mt-1 text-xs text-gray-500 dark:text-gray-300">
+              {{ audio.mimeType || 'audio/mpeg' }}<span v-if="audio.durationMs"> · {{ formatDuration(audio.durationMs) }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Image Lightbox -->
       <Teleport to="body">
         <Transition name="fade">
@@ -263,6 +299,7 @@ interface OutputLine {
 interface PreviewImage {
   url: string
   mimeType?: string
+  durationMs?: number
 }
 
 const props = defineProps<{
@@ -285,6 +322,8 @@ const testPrompt = ref('')
 const loadingModels = ref(false)
 let abortController: AbortController | null = null
 const generatedImages = ref<PreviewImage[]>([])
+const generatedVideos = ref<PreviewImage[]>([])
+const generatedAudios = ref<PreviewImage[]>([])
 const testMode = ref<'default' | 'compact'>('default')
 const isOpenAIAccount = computed(() => props.account?.platform === 'openai')
 const openAITestModeOptions = computed(() => [
@@ -307,6 +346,13 @@ const supportsOpenAIImageTest = computed(() => {
 })
 
 const supportsImageTest = computed(() => supportsGeminiImageTest.value || supportsOpenAIImageTest.value)
+
+const formatDuration = (durationMs: number) => {
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`
+}
 
 const sortTestModels = (models: ClaudeModel[]) => {
   const priorityMap = new Map(prioritizedGeminiModels.map((id, index) => [id, index]))
@@ -376,6 +422,8 @@ const resetState = () => {
   streamingContent.value = ''
   errorMessage.value = ''
   generatedImages.value = []
+  generatedVideos.value = []
+  generatedAudios.value = []
   previewImageUrl.value = ''
 }
 
@@ -488,6 +536,9 @@ const handleEvent = (event: {
   success?: boolean
   error?: string
   image_url?: string
+  video_url?: string
+  audio_url?: string
+  duration_ms?: number
   mime_type?: string
 }) => {
   switch (event.type) {
@@ -520,6 +571,27 @@ const handleEvent = (event: {
           mimeType: event.mime_type
         })
         addLine(t('admin.accounts.imageReceived', { count: generatedImages.value.length }), 'text-purple-300')
+      }
+      break
+
+    case 'video':
+      if (event.video_url) {
+        generatedVideos.value.push({
+          url: event.video_url,
+          mimeType: event.mime_type
+        })
+        addLine(`Video received (${generatedVideos.value.length})`, 'text-purple-300')
+      }
+      break
+
+    case 'audio':
+      if (event.audio_url) {
+        generatedAudios.value.push({
+          url: event.audio_url,
+          mimeType: event.mime_type,
+          durationMs: event.duration_ms
+        })
+        addLine(`Audio received (${generatedAudios.value.length})`, 'text-purple-300')
       }
       break
 

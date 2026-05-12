@@ -91,8 +91,18 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	requestStart := time.Now()
 
+	logger.L().Info("OPENAI_HANDLER_Responses_ENTERED",
+		zap.String("path", c.Request.URL.Path),
+		zap.String("method", c.Request.Method),
+	)
+
 	// Get apiKey and user from context (set by ApiKeyAuth middleware)
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
+	logger.L().Info("OPENAI_HANDLER_Responses_APIKEY",
+		zap.Bool("ok", ok),
+		zap.Int64("apiKey_id", apiKey.ID),
+		zap.Any("group_id", apiKey.GroupID),
+	)
 	if !ok {
 		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
 		return
@@ -330,6 +340,42 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if channelMapping.Mapped {
 			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
 		}
+
+		// MiniMax 等第三方兼容上游不支持 Responses API，直接走 CC 路径。
+		// 在 handler 层做此判断最清晰——GatewayService.Forward 是通用路径，
+		// 不应承担 OpenAI 特定的行为差异。
+		extra := account.Extra
+		responsesSupported := true
+		if extra != nil {
+			if v, ok := extra["openai_responses_supported"]; ok {
+				if b, ok := v.(bool); ok {
+					responsesSupported = b
+				}
+			}
+		}
+		if account.Type == service.AccountTypeAPIKey && !responsesSupported {
+			reqLog.Warn("openai.forward_responses_as_cc",
+				zap.Int64("account_id", account.ID),
+				zap.String("account_name", account.Name),
+			)
+			result, err := h.gatewayService.ForwardOpenAIResponsesAsRawCC(c.Request.Context(), c, account, forwardBody, reqModel, forwardStart)
+			forwardDurationMs := time.Since(forwardStart).Milliseconds()
+			if accountReleaseFunc != nil {
+				accountReleaseFunc()
+			}
+			service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, forwardDurationMs)
+			if err == nil && result != nil && result.FirstTokenMs != nil {
+				service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
+			}
+			if err != nil {
+				reqLog.Error("openai.forward_responses_cc_failed", zap.Error(err))
+				h.ensureForwardErrorResponse(c, streamStarted)
+				return
+			}
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
+			return
+		}
+
 		result, err := h.gatewayService.Forward(c.Request.Context(), c, account, forwardBody)
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		if accountReleaseFunc != nil {

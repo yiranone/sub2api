@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -38,22 +39,28 @@ const (
 
 // TestEvent represents a SSE event for account testing
 type TestEvent struct {
-	Type     string `json:"type"`
-	Text     string `json:"text,omitempty"`
-	Model    string `json:"model,omitempty"`
-	Status   string `json:"status,omitempty"`
-	Code     string `json:"code,omitempty"`
-	ImageURL string `json:"image_url,omitempty"`
-	MimeType string `json:"mime_type,omitempty"`
-	Data     any    `json:"data,omitempty"`
-	Success  bool   `json:"success,omitempty"`
-	Error    string `json:"error,omitempty"`
+	Type       string `json:"type"`
+	Text       string `json:"text,omitempty"`
+	Model      string `json:"model,omitempty"`
+	Status     string `json:"status,omitempty"`
+	Code       string `json:"code,omitempty"`
+	ImageURL   string `json:"image_url,omitempty"`
+	VideoURL   string `json:"video_url,omitempty"`
+	AudioURL   string `json:"audio_url,omitempty"`
+	DurationMs int64  `json:"duration_ms,omitempty"`
+	MimeType   string `json:"mime_type,omitempty"`
+	Data       any    `json:"data,omitempty"`
+	Success    bool   `json:"success,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 const (
 	defaultGeminiTextTestPrompt  = "hi"
 	defaultGeminiImageTestPrompt = "Generate a cute orange cat astronaut sticker on a clean pastel background."
 	defaultOpenAIImageTestPrompt = "Generate a cute orange cat astronaut sticker on a clean pastel background."
+	defaultOpenAIVideoTestPrompt = "A tiny robot walking through a neon city street, cinematic camera movement."
+	defaultOpenAIAudioTestPrompt = "Hello from MiniMax speech synthesis."
+	defaultOpenAIMusicTestPrompt = "A short uplifting piano melody."
 )
 
 // isOpenAIImageModel checks if the model is an OpenAI image generation model (e.g. gpt-image-2).
@@ -504,6 +511,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		testModelID = openai.DefaultTestModel
 	}
 
+	requestedTestModelID := testModelID
 	// Align test routing with gateway behavior: OpenAI accounts apply normal
 	// account model mapping, and compact mode applies compact-only mapping on top.
 	testModelID = account.GetMappedModel(testModelID)
@@ -512,8 +520,32 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		return s.testOpenAICompactConnection(c, account, testModelID)
 	}
 
+	if isOpenAIVideoModel(requestedTestModelID) || isOpenAIVideoModel(testModelID) || isMiniMaxVideoGenerationModel(testModelID) {
+		videoPrompt := strings.TrimSpace(prompt)
+		if videoPrompt == "" {
+			videoPrompt = defaultOpenAIVideoTestPrompt
+		}
+		return s.testOpenAIVideoAPIKey(c, ctx, account, requestedTestModelID, testModelID, videoPrompt)
+	}
+
+	if isOpenAISpeechModel(requestedTestModelID) || isOpenAISpeechModel(testModelID) || isMiniMaxSpeechModel(testModelID) {
+		audioPrompt := strings.TrimSpace(prompt)
+		if audioPrompt == "" {
+			audioPrompt = defaultOpenAIAudioTestPrompt
+		}
+		return s.testOpenAIAudioAPIKey(c, ctx, account, requestedTestModelID, testModelID, audioPrompt)
+	}
+
+	if isOpenAIMusicModel(requestedTestModelID) || isOpenAIMusicModel(testModelID) || isMiniMaxMusicModel(testModelID) {
+		musicPrompt := strings.TrimSpace(prompt)
+		if musicPrompt == "" {
+			musicPrompt = defaultOpenAIMusicTestPrompt
+		}
+		return s.testOpenAIMusicAPIKey(c, ctx, account, requestedTestModelID, testModelID, musicPrompt)
+	}
+
 	// Route to image generation test if an image model is selected
-	if isOpenAIImageModel(testModelID) {
+	if isOpenAIImageModel(requestedTestModelID) || isOpenAIImageModel(testModelID) || isMiniMaxImageGenerationModel(testModelID) {
 		imagePrompt := strings.TrimSpace(prompt)
 		if imagePrompt == "" {
 			imagePrompt = defaultOpenAIImageTestPrompt
@@ -557,22 +589,13 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		if err != nil {
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
 		}
-		if account.IsOpenAIChatCompletionsMode() {
+		// 走 CC 路径的两种情况：显式开启 CC 模式，或探测到上游不支持 Responses（与网关路由逻辑保持一致）。
+		if account.IsOpenAIChatCompletionsMode() || !openai_compat.ShouldUseResponsesAPI(account.Extra) {
 			apiURL = buildOpenAIChatCompletionsURL(normalizedBaseURL)
 		} else {
 			apiURL = strings.TrimSuffix(normalizedBaseURL, "/") + "/responses"
 		}
 		log.Printf("apiURL: %v", apiURL)
-		// 账号已被探测为不支持 Responses（如 DeepSeek/Kimi 等）时，丢出明确提示。
-		// 账号本身可用（网关会走 CC 直转），仅测试入口需要补齐 CC SSE 处理逻辑。
-		// TODO：实现 CC 格式的账号测试路径（需专门的 CC SSE handler）。
-		if !openai_compat.ShouldUseResponsesAPI(account.Extra) {
-			return s.sendErrorAndEnd(c,
-				"账号已被探测为不支持 OpenAI Responses API（如 DeepSeek/Kimi 等三方兼容上游），"+
-					"账号本身可正常使用，但当前测试接口仅支持 Responses API 路径。请直接通过实际 API 调用验证。",
-			)
-		}
-		// apiURL = buildOpenAIResponsesURL(normalizedBaseURL)
 	} else {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Unsupported account type: %s", account.Type))
 	}
@@ -584,10 +607,11 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
-	// Create OpenAI Responses API payload
-	// payload := createOpenAITestPayload(testModelID, isOAuth)
+	// Create payload: CC path needs CC payload, Responses path needs Responses payload.
+	// 条件与上面的 apiURL 选择保持一致（IsOpenAIChatCompletionsMode 或上游不支持 Responses）。
+	needsCCPayload := account.IsOpenAIChatCompletionsMode() || !openai_compat.ShouldUseResponsesAPI(account.Extra)
 	var payload map[string]any
-	if account.IsOpenAIChatCompletionsMode() {
+	if needsCCPayload {
 		payload = createOpenAIChatCompletionsTestPayload(testModelID)
 	} else {
 		payload = createOpenAITestPayload(testModelID, isOAuth)
@@ -648,8 +672,10 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
 	}
 
-	// Process SSE stream
-	if account.IsOpenAIChatCompletionsMode() {
+	// Process SSE stream: CC path uses CC handler, Responses path uses Responses handler.
+	// Condition must match the URL/payload selection above.
+	needsCCHandler := account.IsOpenAIChatCompletionsMode() || !openai_compat.ShouldUseResponsesAPI(account.Extra)
+	if needsCCHandler {
 		return s.processOpenAIChatCompletionsStream(c, resp.Body)
 	}
 	return s.processOpenAIStream(c, resp.Body)
@@ -1353,6 +1379,10 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
 	}
 	apiURL := buildOpenAIImagesURL(normalizedBaseURL, openAIImagesGenerationsEndpoint)
+	minimaxImage := isOpenAICompatMiniMaxProvider(account) && isMiniMaxImageGenerationModel(modelID)
+	if minimaxImage {
+		apiURL = buildMiniMaxImageGenerationURL(normalizedBaseURL)
+	}
 
 	// Set SSE headers
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
@@ -1363,7 +1393,30 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: modelID})
 
-	payload := map[string]any{
+	payload := map[string]any{}
+	if minimaxImage {
+		parsed := &OpenAIImagesRequest{
+			Endpoint:       openAIImagesGenerationsEndpoint,
+			Model:          modelID,
+			Prompt:         prompt,
+			N:              1,
+			ResponseFormat: "b64_json",
+		}
+		payloadBytes, buildErr := buildMiniMaxImageGenerationBody(parsed, modelID)
+		if buildErr != nil {
+			return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to build image request: %s", buildErr.Error()))
+		}
+		payload = nil
+		req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(payloadBytes))
+		if err != nil {
+			return s.sendErrorAndEnd(c, "Failed to create request")
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+authToken)
+		return s.sendOpenAIImageAPIKeyTestRequest(c, account, req, true, modelID, "b64_json")
+	}
+
+	payload = map[string]any{
 		"model":           modelID,
 		"prompt":          prompt,
 		"n":               1,
@@ -1378,6 +1431,10 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+authToken)
 
+	return s.sendOpenAIImageAPIKeyTestRequest(c, account, req, false, modelID, "b64_json")
+}
+
+func (s *AccountTestService) sendOpenAIImageAPIKeyTestRequest(c *gin.Context, account *Account, req *http.Request, minimaxImage bool, modelID string, responseFormat string) error {
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
@@ -1397,11 +1454,19 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 	if resp.StatusCode != http.StatusOK {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
 	}
+	if minimaxImage {
+		converted, _, convertErr := convertMiniMaxImageResponseToOpenAIAPI(body, responseFormat, modelID)
+		if convertErr != nil {
+			return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to parse MiniMax image response: %s", convertErr.Error()))
+		}
+		body = converted
+	}
 
 	// Parse {"data": [{"b64_json": "...", "revised_prompt": "..."}]}
 	var result struct {
 		Data []struct {
 			B64JSON       string `json:"b64_json"`
+			URL           string `json:"url"`
 			RevisedPrompt string `json:"revised_prompt"`
 		} `json:"data"`
 	}
@@ -1423,11 +1488,323 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 				ImageURL: "data:image/png;base64," + item.B64JSON,
 				MimeType: "image/png",
 			})
+		} else if item.URL != "" {
+			s.sendEvent(c, TestEvent{
+				Type:     "image",
+				ImageURL: item.URL,
+				MimeType: "image/png",
+			})
 		}
 	}
 
 	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
 	return nil
+}
+
+func (s *AccountTestService) testOpenAIVideoAPIKey(c *gin.Context, ctx context.Context, account *Account, requestedModelID string, modelID string, prompt string) error {
+	if account.Type != AccountTypeAPIKey {
+		return s.sendErrorAndEnd(c, "Video generation test currently supports API key accounts only")
+	}
+	if !isOpenAICompatMiniMaxProvider(account) || !isMiniMaxVideoGenerationModel(modelID) {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Unsupported video model mapping: %s -> %s", requestedModelID, modelID))
+	}
+
+	authToken := account.GetOpenAIApiKey()
+	if authToken == "" {
+		return s.sendErrorAndEnd(c, "No API key available")
+	}
+	baseURL := account.GetOpenAIBaseURL()
+	if baseURL == "" {
+		baseURL = "https://api.minimaxi.com"
+	}
+	normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
+	if err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
+	}
+
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	s.sendEvent(c, TestEvent{Type: "test_start", Model: modelID})
+	s.sendEvent(c, TestEvent{Type: "content", Text: "Creating MiniMax video generation task...\n"})
+
+	parsed := &OpenAIVideosRequest{
+		Model:  requestedModelID,
+		Prompt: prompt,
+	}
+	payloadBytes, buildErr := buildMiniMaxVideoGenerationBody(parsed, modelID)
+	if buildErr != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to build video request: %s", buildErr.Error()))
+	}
+	log.Printf("MiniMax video_generation request body: %s", string(payloadBytes))
+	result, err := s.runMiniMaxVideoGeneration(ctx, c, account, authToken, normalizedBaseURL, payloadBytes)
+	if err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
+	}
+	if result.TaskID != "" {
+		s.sendEvent(c, TestEvent{Type: "content", Text: fmt.Sprintf("Task %s completed.\n", result.TaskID)})
+	}
+	s.sendEvent(c, TestEvent{
+		Type:     "video",
+		VideoURL: result.URL,
+		MimeType: result.MimeType,
+		Data: map[string]any{
+			"task_id": result.TaskID,
+			"file_id": result.FileID,
+		},
+	})
+	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+	return nil
+}
+
+func (s *AccountTestService) runMiniMaxVideoGeneration(ctx context.Context, c *gin.Context, account *Account, authToken string, baseURL string, payloadBytes []byte) (openAIVideoTestResult, error) {
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	doReq := func(method string, targetURL string, body []byte) ([]byte, error) {
+		var reader io.Reader
+		if len(body) > 0 {
+			reader = bytes.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, targetURL, reader)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to create request")
+		}
+		req.Header.Set("Authorization", "Bearer "+authToken)
+		if len(body) > 0 {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+		if err != nil {
+			return nil, fmt.Errorf("Request failed: %s", err.Error())
+		}
+		defer func() { _ = resp.Body.Close() }()
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to read response: %s", err.Error())
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, string(respBody))
+		}
+		return respBody, nil
+	}
+
+	createBody, err := doReq(http.MethodPost, buildMiniMaxVideoGenerationURL(baseURL), payloadBytes)
+	if err != nil {
+		return openAIVideoTestResult{}, err
+	}
+	if baseRespErr := miniMaxBaseRespError(createBody); baseRespErr != "" {
+		return openAIVideoTestResult{}, errors.New(baseRespErr)
+	}
+	taskID := extractMiniMaxVideoTaskID(createBody)
+	if taskID == "" {
+		return openAIVideoTestResult{}, fmt.Errorf("MiniMax video_generation did not return task_id; body_preview=%s", miniMaxVideoResponsePreview(createBody))
+	}
+	s.sendEvent(c, TestEvent{Type: "content", Text: fmt.Sprintf("Task created: %s\n", taskID)})
+
+	timeout, interval := miniMaxVideoPollConfig()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	fileID := ""
+	pollOnce := func() error {
+		queryBody, err := doReq(http.MethodGet, buildMiniMaxVideoQueryURL(baseURL, taskID), nil)
+		if err != nil {
+			return err
+		}
+		nextFileID, status, failed := extractMiniMaxVideoFileID(queryBody)
+		if failed {
+			return fmt.Errorf("MiniMax video generation failed: %s", strings.TrimSpace(status))
+		}
+		if status != "" {
+			s.sendEvent(c, TestEvent{Type: "content", Text: fmt.Sprintf("Status: %s\n", status)})
+		}
+		fileID = nextFileID
+		return nil
+	}
+	if err := pollOnce(); err != nil {
+		return openAIVideoTestResult{}, err
+	}
+	for fileID == "" {
+		select {
+		case <-ctx.Done():
+			return openAIVideoTestResult{}, ctx.Err()
+		case <-deadline.C:
+			return openAIVideoTestResult{}, fmt.Errorf("MiniMax video generation timed out waiting for task %s", taskID)
+		case <-ticker.C:
+			if err := pollOnce(); err != nil {
+				return openAIVideoTestResult{}, err
+			}
+		}
+	}
+	fileBody, err := doReq(http.MethodGet, buildMiniMaxVideoFileRetrieveURL(baseURL, fileID), nil)
+	if err != nil {
+		return openAIVideoTestResult{}, err
+	}
+	videoURL := extractMiniMaxVideoDownloadURL(fileBody)
+	if videoURL == "" {
+		return openAIVideoTestResult{}, fmt.Errorf("MiniMax files/retrieve did not return video download url")
+	}
+	return openAIVideoTestResult{
+		URL:      videoURL,
+		TaskID:   taskID,
+		FileID:   fileID,
+		MimeType: "video/mp4",
+	}, nil
+}
+
+func (s *AccountTestService) testOpenAIAudioAPIKey(c *gin.Context, ctx context.Context, account *Account, requestedModelID string, modelID string, prompt string) error {
+	if account.Type != AccountTypeAPIKey {
+		return s.sendErrorAndEnd(c, "Audio test currently supports API key accounts only")
+	}
+	if !isOpenAICompatMiniMaxProvider(account) || !isMiniMaxSpeechModel(modelID) {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Unsupported speech model mapping: %s -> %s", requestedModelID, modelID))
+	}
+	baseURL, authToken, err := s.openAIMediaTestBase(c, account)
+	if err != nil {
+		return err
+	}
+	s.sendEvent(c, TestEvent{Type: "test_start", Model: modelID})
+	parsed := &OpenAIAudioSpeechRequest{Model: requestedModelID, Input: prompt, Voice: "English_expressive_narrator", ResponseFormat: "mp3"}
+	payloadBytes, format, buildErr := buildMiniMaxSpeechBody(parsed, modelID)
+	if buildErr != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to build speech request: %s", buildErr.Error()))
+	}
+	result, err := s.runMiniMaxAudioRequest(ctx, account, authToken, buildMiniMaxSpeechURL(baseURL), payloadBytes, format, modelID)
+	if err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
+	}
+	s.sendEvent(c, TestEvent{Type: "audio", AudioURL: audioResultDataURL(result), MimeType: result.MimeType, DurationMs: result.DurationMs})
+	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+	return nil
+}
+
+func (s *AccountTestService) testOpenAIMusicAPIKey(c *gin.Context, ctx context.Context, account *Account, requestedModelID string, modelID string, prompt string) error {
+	if account.Type != AccountTypeAPIKey {
+		return s.sendErrorAndEnd(c, "Music test currently supports API key accounts only")
+	}
+	if !isOpenAICompatMiniMaxProvider(account) || !isMiniMaxMusicModel(modelID) {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Unsupported music model mapping: %s -> %s", requestedModelID, modelID))
+	}
+	baseURL, authToken, err := s.openAIMediaTestBase(c, account)
+	if err != nil {
+		return err
+	}
+	s.sendEvent(c, TestEvent{Type: "test_start", Model: modelID})
+	parsed := &OpenAIMusicGenerationRequest{Model: requestedModelID, Prompt: prompt, OutputFormat: "mp3"}
+	payloadBytes, format, buildErr := buildMiniMaxMusicBody(parsed, modelID)
+	if buildErr != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to build music request: %s", buildErr.Error()))
+	}
+	result, err := s.runMiniMaxAudioRequest(ctx, account, authToken, buildMiniMaxMusicURL(baseURL), payloadBytes, format, modelID)
+	if err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
+	}
+	s.sendEvent(c, TestEvent{Type: "audio", AudioURL: audioResultDataURL(result), MimeType: result.MimeType, DurationMs: result.DurationMs})
+	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+	return nil
+}
+
+func (s *AccountTestService) openAIMediaTestBase(c *gin.Context, account *Account) (string, string, error) {
+	authToken := account.GetOpenAIApiKey()
+	if authToken == "" {
+		return "", "", s.sendErrorAndEnd(c, "No API key available")
+	}
+	baseURL := account.GetOpenAIBaseURL()
+	if baseURL == "" {
+		baseURL = "https://api.minimaxi.com"
+	}
+	normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
+	if err != nil {
+		return "", "", s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
+	}
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+	return normalizedBaseURL, authToken, nil
+}
+
+func (s *AccountTestService) runMiniMaxAudioRequest(ctx context.Context, account *Account, authToken string, targetURL string, payloadBytes []byte, format string, modelID string) (openAIAudioResult, error) {
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(payloadBytes))
+	if err != nil {
+		return openAIAudioResult{}, fmt.Errorf("Failed to create request")
+	}
+	req.Header.Set("Authorization", "Bearer "+authToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	if err != nil {
+		return openAIAudioResult{}, fmt.Errorf("Request failed: %s", err.Error())
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return openAIAudioResult{}, fmt.Errorf("Failed to read response: %s", err.Error())
+	}
+	if resp.StatusCode != http.StatusOK {
+		return openAIAudioResult{}, fmt.Errorf("API returned %d: %s", resp.StatusCode, string(respBody))
+	}
+	result, err := convertMiniMaxAudioResponse(respBody, format, modelID)
+	if err != nil {
+		return openAIAudioResult{}, err
+	}
+	if result.URL != "" {
+		downloaded, downloadErr := s.downloadMiniMaxAudioPreview(ctx, account, authToken, result.URL, result.MimeType)
+		if downloadErr == nil {
+			result.AudioBase64 = base64.StdEncoding.EncodeToString(downloaded)
+			result.URL = ""
+		} else {
+			log.Printf("MiniMax audio preview download failed, falling back to URL: %v", downloadErr)
+		}
+	}
+	return result, nil
+}
+
+func audioResultDataURL(result openAIAudioResult) string {
+	if result.URL != "" {
+		return result.URL
+	}
+	return "data:" + result.MimeType + ";base64," + result.AudioBase64
+}
+
+func (s *AccountTestService) downloadMiniMaxAudioPreview(ctx context.Context, account *Account, authToken string, audioURL string, mimeType string) ([]byte, error) {
+	audioURL = strings.TrimSpace(audioURL)
+	if audioURL == "" || strings.HasPrefix(strings.ToLower(audioURL), "data:") {
+		return nil, fmt.Errorf("audio url is not downloadable")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, audioURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", strings.TrimSpace(mimeType)+",audio/*,*/*;q=0.8")
+	if authToken != "" && strings.Contains(audioURL, "minimax") {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("download audio preview returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, miniMaxAudioMaxDownloadBytes))
 }
 
 // testOpenAIImageOAuth tests OpenAI image generation using an OAuth account via Codex /responses API.
@@ -1610,11 +1987,11 @@ func createOpenAIChatCompletionsTestPayload(modelID string) map[string]any {
 		"messages": []map[string]any{
 			{
 				"role":    "user",
-				"content": "你是谁",
+				"content": "hello",
 			},
 		},
-		"max_tokens": 10,
-		"stream":     true,
+		"max_tokens": 20,
+		"stream":     false,
 	}
 }
 

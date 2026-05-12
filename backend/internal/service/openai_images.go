@@ -14,6 +14,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -33,6 +34,7 @@ const (
 
 	openAIImagesGenerationsURL = "https://api.openai.com/v1/images/generations"
 	openAIImagesEditsURL       = "https://api.openai.com/v1/images/edits"
+	miniMaxImagesGenerationURL = "https://api.minimaxi.com/v1/image_generation"
 
 	openAIChatGPTStartURL          = "https://chatgpt.com/"
 	openAIChatGPTFilesURL          = "https://chatgpt.com/backend-api/files"
@@ -620,7 +622,34 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		return nil, err
 	}
 	upstreamModel := account.GetMappedModel(requestModel)
-	if err := validateOpenAIImagesModel(upstreamModel); err != nil {
+	minimaxImage := isOpenAICompatMiniMaxProvider(account) && isMiniMaxImageGenerationModel(upstreamModel)
+	if !minimaxImage {
+		if err := validateOpenAIImagesModel(upstreamModel); err != nil {
+			return nil, err
+		}
+	}
+	if minimaxImage && parsed.IsEdits() {
+		return nil, fmt.Errorf("MiniMax image_generation does not support image edits")
+	}
+	if minimaxImage && parsed.Stream {
+		return nil, fmt.Errorf("MiniMax image_generation does not support streaming")
+	}
+	if minimaxImage && len(parsed.Uploads) > 0 {
+		return nil, fmt.Errorf("MiniMax image_generation does not support uploaded input images")
+	}
+	var forwardBody []byte
+	var forwardContentType string
+	var err error
+	if minimaxImage {
+		forwardBody, err = buildMiniMaxImageGenerationBody(parsed, upstreamModel)
+		if err != nil {
+			return nil, err
+		}
+		forwardContentType = "application/json"
+	} else {
+		forwardBody, forwardContentType, err = rewriteOpenAIImagesModel(body, parsed.ContentType, upstreamModel)
+	}
+	if err != nil {
 		return nil, err
 	}
 	logger.LegacyPrintf(
@@ -631,10 +660,6 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		parsed.Endpoint,
 		account.Type,
 	)
-	forwardBody, forwardContentType, err := rewriteOpenAIImagesModel(body, parsed.ContentType, upstreamModel)
-	if err != nil {
-		return nil, err
-	}
 	if !parsed.Multipart {
 		setOpsUpstreamRequestBody(c, forwardBody)
 	}
@@ -649,6 +674,17 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	upstreamReq, err := s.buildOpenAIImagesRequest(upstreamCtx, c, account, forwardBody, forwardContentType, token, parsed.Endpoint)
 	if err != nil {
 		return nil, err
+	}
+	if minimaxImage {
+		validatedURL, err := s.validateUpstreamBaseURL(account.GetOpenAIBaseURL())
+		if err != nil {
+			return nil, err
+		}
+		upstreamReq.URL, err = url.Parse(buildMiniMaxImageGenerationURL(validatedURL))
+		if err != nil {
+			return nil, err
+		}
+		upstreamReq.Host = upstreamReq.URL.Host
 	}
 
 	proxyURL := ""
@@ -725,6 +761,15 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		usage = streamUsage
 		imageCount = streamCount
 		firstTokenMs = ttft
+	} else if minimaxImage {
+		nonStreamUsage, nonStreamCount, err := s.handleMiniMaxImagesNonStreamingResponse(resp, c, parsed, upstreamModel)
+		if err != nil {
+			return nil, err
+		}
+		usage = nonStreamUsage
+		if nonStreamCount > 0 {
+			imageCount = nonStreamCount
+		}
 	} else {
 		nonStreamUsage, nonStreamCount, err := s.handleOpenAIImagesNonStreamingResponse(resp, c)
 		if err != nil {
@@ -747,6 +792,125 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		ImageCount:      imageCount,
 		ImageSize:       parsed.SizeTier,
 	}, nil
+}
+
+func isMiniMaxImageGenerationModel(model string) bool {
+	return strings.EqualFold(strings.TrimSpace(model), "image-01")
+}
+
+func buildMiniMaxImageGenerationURL(base string) string {
+	normalized := strings.TrimRight(strings.TrimSpace(base), "/")
+	if normalized == "" {
+		return miniMaxImagesGenerationURL
+	}
+	if strings.HasSuffix(normalized, "/v1/image_generation") || strings.HasSuffix(normalized, "/image_generation") {
+		return normalized
+	}
+	if strings.HasSuffix(normalized, "/v1") {
+		return normalized + "/image_generation"
+	}
+	return normalized + "/v1/image_generation"
+}
+
+func buildMiniMaxImageGenerationBody(parsed *OpenAIImagesRequest, model string) ([]byte, error) {
+	if parsed == nil {
+		return nil, fmt.Errorf("parsed images request is required")
+	}
+	body := []byte(`{"model":"","prompt":"","n":1}`)
+	body, _ = sjson.SetBytes(body, "model", strings.TrimSpace(model))
+	body, _ = sjson.SetBytes(body, "prompt", strings.TrimSpace(parsed.Prompt))
+	n := parsed.N
+	if n <= 0 {
+		n = 1
+	}
+	body, _ = sjson.SetBytes(body, "n", n)
+	if size := strings.TrimSpace(parsed.Size); size != "" {
+		body, _ = sjson.SetBytes(body, "size", size)
+	}
+	if format := strings.TrimSpace(parsed.OutputFormat); format != "" {
+		body, _ = sjson.SetBytes(body, "output_format", format)
+	}
+	return body, nil
+}
+
+func convertMiniMaxImageResponseToOpenAIAPI(body []byte, responseFormat string, model string) ([]byte, int, error) {
+	if !gjson.ValidBytes(body) {
+		return nil, 0, fmt.Errorf("invalid JSON response")
+	}
+	format := strings.ToLower(strings.TrimSpace(responseFormat))
+	if format == "" {
+		format = "b64_json"
+	}
+	results := make([]openAIResponsesImageResult, 0, 1)
+	appendResult := func(value string, isURL bool) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		result := openAIResponsesImageResult{
+			OutputFormat: "png",
+			Model:        model,
+		}
+		if isURL {
+			if strings.HasPrefix(value, "data:") {
+				if idx := strings.Index(value, ","); idx >= 0 {
+					result.Result = value[idx+1:]
+				} else {
+					result.URL = value
+				}
+			} else {
+				result.URL = value
+			}
+		} else {
+			result.Result = value
+		}
+		results = append(results, result)
+	}
+
+	for _, path := range []string{"data.image_base64", "image_base64", "data.b64_json", "b64_json"} {
+		if value := gjson.GetBytes(body, path); value.Exists() {
+			if value.IsArray() {
+				for _, item := range value.Array() {
+					appendResult(item.String(), false)
+				}
+			} else {
+				appendResult(value.String(), false)
+			}
+		}
+	}
+	for _, path := range []string{"data.image_urls", "image_urls", "data.urls", "urls"} {
+		if value := gjson.GetBytes(body, path); value.Exists() {
+			if value.IsArray() {
+				for _, item := range value.Array() {
+					appendResult(item.String(), true)
+				}
+			} else {
+				appendResult(value.String(), true)
+			}
+		}
+	}
+	if len(results) == 0 {
+		return nil, 0, fmt.Errorf("no images returned from MiniMax")
+	}
+	out, err := buildOpenAIImagesAPIResponse(results, time.Now().Unix(), nil, results[0], format)
+	if err != nil {
+		return nil, 0, err
+	}
+	return out, len(results), nil
+}
+
+func (s *OpenAIGatewayService) handleMiniMaxImagesNonStreamingResponse(resp *http.Response, c *gin.Context, parsed *OpenAIImagesRequest, upstreamModel string) (OpenAIUsage, int, error) {
+	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
+	if err != nil {
+		return OpenAIUsage{}, 0, err
+	}
+	converted, count, err := convertMiniMaxImageResponseToOpenAIAPI(body, parsed.ResponseFormat, upstreamModel)
+	if err != nil {
+		return OpenAIUsage{}, 0, err
+	}
+	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	c.Data(http.StatusOK, "application/json", converted)
+	return OpenAIUsage{}, count, nil
 }
 
 func (s *OpenAIGatewayService) buildOpenAIImagesRequest(

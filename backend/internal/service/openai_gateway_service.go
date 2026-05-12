@@ -24,6 +24,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/cespare/xxhash/v2"
@@ -2052,6 +2053,30 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		return s.forwardOpenAIPassthrough(ctx, c, account, originalBody, reqModel, reasoningEffort, reqStream, startTime)
 	}
 
+	// APIKey 账号 + 上游探测为不支持 Responses → 走 CC 直转。
+	// minimax 等第三方兼容上游只支持 /v1/chat/completions，且请求体需转换为 CC 格式。
+	responsesSupported := openai_compat.ShouldUseResponsesAPI(account.Extra)
+	logger.L().Info("forward: checking CC routing",
+		zap.Int64("account_id", account.ID),
+		zap.String("account_type", string(account.Type)),
+		zap.Strings("extra_keys", func() []string {
+			keys := make([]string, 0, len(account.Extra))
+			for k := range account.Extra {
+				keys = append(keys, k)
+			}
+			return keys
+		}()),
+		zap.Any("openai_responses_supported_value", account.Extra["openai_responses_supported"]),
+		zap.Bool("should_use_responses_api", responsesSupported),
+	)
+	if account.Type == AccountTypeAPIKey && !responsesSupported {
+		logger.L().Info("forward: routing to forwardResponsesAsRawChatCompletions",
+			zap.Int64("account_id", account.ID),
+			zap.String("account_type", string(account.Type)),
+		)
+		return s.forwardResponsesAsRawChatCompletions(ctx, c, account, body, originalModel, startTime)
+	}
+
 	reqBody, err := getOpenAIRequestBodyMap(c, body)
 	if err != nil {
 		return nil, err
@@ -3213,6 +3238,327 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	return req, nil
 }
 
+// forwardResponsesAsRawChatCompletions converts a Responses API request body to Chat
+// Completions format and forwards it to the upstream /v1/chat/completions endpoint.
+//
+// This is used for APIKey accounts whose upstream does not support the Responses API
+// (e.g. minimax, DeepSeek, Kimi). The Responses API body has an "input" array;
+// this function extracts text content and converts it to the "messages" format.
+//
+// IMPORTANT: This function forces stream=false when forwarding to the upstream CC endpoint,
+// then converts the JSON response back to SSE for the client. This avoids SSE
+// compatibility issues with third-party providers that may not send proper SSE
+// termination markers.
+func (s *OpenAIGatewayService) forwardResponsesAsRawChatCompletions(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+	originalModel string,
+	startTime time.Time,
+) (*OpenAIForwardResult, error) {
+	slog.Debug("forwardResponsesAsRawChatCompletions: entering",
+		"account_id", account.ID,
+		"account_name", account.Name,
+		"account_type", account.Type,
+		"original_model", originalModel,
+		"stream_in_body", gjson.GetBytes(body, "stream").Bool(),
+	)
+
+	// Parse Responses body
+	var reqBody map[string]any
+	if err := json.Unmarshal(body, &reqBody); err != nil {
+		slog.Warn("forwardResponsesAsRawChatCompletions: parse body failed", "err", err)
+		return nil, fmt.Errorf("parse responses body for CC conversion: %w", err)
+	}
+
+	// Extract model and apply account-level mapping before sending to the
+	// OpenAI-compatible Chat Completions upstream. Scheduling already uses the
+	// requested model as the mapping key; this keeps the actual upstream body in
+	// sync with that decision.
+	requestedModel := originalModel
+	if m, ok := reqBody["model"].(string); ok && m != "" {
+		requestedModel = m
+	}
+	upstreamModel := account.GetMappedModel(requestedModel)
+
+	// Always use non-streaming when forwarding to third-party CC providers
+	// to avoid SSE compatibility issues. We will convert the JSON response back to SSE.
+	clientWantsStream := gjson.GetBytes(body, "stream").Bool()
+
+	// Convert input array to messages array
+	// Responses API: input: [{role: "user", content: [{type: "input_text", text: "..."}]}]
+	// CC API:       messages: [{role: "user", content: "..."}]
+	messages := []any{}
+	if input, ok := reqBody["input"].([]any); ok {
+		for _, item := range input {
+			if itemMap, ok := item.(map[string]any); ok {
+				msg := map[string]any{}
+				if role, ok := itemMap["role"].(string); ok {
+					// developer role is not supported by third-party providers like minimax;
+					// convert to system role (OpenAI API treats them equivalently).
+					if role == "developer" {
+						msg["role"] = "system"
+					} else {
+						msg["role"] = role
+					}
+				}
+				// Extract text content from content array
+				if content, ok := itemMap["content"].([]any); ok {
+					var textContent string
+					for _, c := range content {
+						if cMap, ok := c.(map[string]any); ok {
+							if t, ok := cMap["type"].(string); ok && t == "input_text" {
+								if text, ok := cMap["text"].(string); ok {
+									textContent += text
+								}
+							}
+						}
+					}
+					msg["content"] = textContent
+				}
+				if len(msg) > 0 {
+					messages = append(messages, msg)
+				}
+			}
+		}
+	}
+
+	slog.Debug("forwardResponsesAsRawChatCompletions: converted body",
+		"requested_model", requestedModel,
+		"upstream_model", upstreamModel,
+		"client_wants_stream", clientWantsStream,
+		"messages_count", len(messages),
+	)
+
+	// Build CC body with stream=false
+	ccBody := map[string]any{
+		"model":    upstreamModel,
+		"messages": messages,
+		"stream":   false,
+	}
+	ccBodyBytes, _ := json.Marshal(ccBody)
+	if account != nil && account.IsOpenAIApiKey() {
+		if minimizedBody, minimized := minimizeOpenAICompatChatRequestForProvider(account, ccBodyBytes); minimized {
+			ccBodyBytes = minimizedBody
+		}
+	}
+
+	// Build upstream request to /v1/chat/completions
+	apiKey := account.GetOpenAIApiKey()
+	if apiKey == "" {
+		return nil, fmt.Errorf("account %d missing api_key", account.ID)
+	}
+	baseURL := account.GetOpenAIBaseURL()
+	if baseURL == "" {
+		baseURL = "https://api.openai.com"
+	}
+	validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+	if err != nil {
+		slog.Warn("forwardResponsesAsRawChatCompletions: invalid base_url", "base_url", baseURL, "err", err)
+		return nil, fmt.Errorf("invalid base_url: %w", err)
+	}
+	targetURL := buildOpenAIChatCompletionsURL(validatedURL)
+
+	slog.Info("forwardResponsesAsRawChatCompletions: sending to upstream",
+		"account_id", account.ID,
+		"base_url", baseURL,
+		"validated_url", validatedURL,
+		"target_url", targetURL,
+		"requested_model", requestedModel,
+		"upstream_model", gjson.GetBytes(ccBodyBytes, "model").String(),
+		"messages_count", len(messages),
+		"client_wants_stream", clientWantsStream,
+		"cc_body_preview", func() string {
+			return string(ccBodyBytes)
+		}(),
+	)
+
+	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+	req, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, targetURL, bytes.NewReader(ccBodyBytes))
+	releaseUpstreamCtx()
+	if err != nil {
+		slog.Warn("forwardResponsesAsRawChatCompletions: build request failed", "err", err)
+		return nil, fmt.Errorf("build upstream request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	// Get proxy URL
+	proxyURL := ""
+	if account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+
+	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+	if err != nil {
+		slog.Warn("forwardResponsesAsRawChatCompletions: upstream request failed", "err", err)
+		safeErr := sanitizeUpstreamErrorMessage(err.Error())
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error": gin.H{
+				"type":    "upstream_error",
+				"message": "Upstream request failed",
+			},
+		})
+		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		slog.Warn("forwardResponsesAsRawChatCompletions: read body failed", "status", resp.StatusCode, "err", err)
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error": gin.H{
+				"type":    "upstream_error",
+				"message": "Failed to read upstream response",
+			},
+		})
+		return nil, fmt.Errorf("read upstream body: %w", err)
+	}
+
+	slog.Info("forwardResponsesAsRawChatCompletions: upstream response",
+		"account_id", account.ID,
+		"status", resp.StatusCode,
+		"body_len", len(respBody),
+		"body_preview", func() string {
+			if len(respBody) > 500 {
+				return string(respBody[:500])
+			}
+			return string(respBody)
+		}(),
+	)
+
+	if resp.StatusCode >= 400 {
+		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		if upstreamMsg == "" {
+			upstreamMsg = fmt.Sprintf("Upstream error: %d", resp.StatusCode)
+		}
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error": gin.H{
+				"type":    "upstream_error",
+				"message": upstreamMsg,
+			},
+		})
+		return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
+	}
+
+	// Parse CC JSON response and convert to SSE
+	var ccResp map[string]any
+	if err := json.Unmarshal(respBody, &ccResp); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error": gin.H{
+				"type":    "upstream_error",
+				"message": "Failed to parse upstream response",
+			},
+		})
+		return nil, fmt.Errorf("parse CC response: %w", err)
+	}
+
+	if clientWantsStream {
+		// Convert the buffered Chat Completions JSON response into Responses SSE.
+		// Codex /responses clients require response.completed; Chat Completions
+		// chunks make the stream look truncated to them.
+		result, err := s.ccJSONToSSEStream(ctx, c, ccResp, requestedModel, startTime)
+		if result != nil {
+			result.BillingModel = requestedModel
+			result.UpstreamModel = gjson.GetBytes(ccBodyBytes, "model").String()
+		}
+		return result, err
+	}
+
+	var chatResp apicompat.ChatCompletionsResponse
+	if err := json.Unmarshal(respBody, &chatResp); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error": gin.H{
+				"type":    "upstream_error",
+				"message": "Failed to parse upstream response",
+			},
+		})
+		return nil, fmt.Errorf("parse CC response: %w", err)
+	}
+	responsesResp := apicompat.ChatCompletionsToResponsesResponse(&chatResp)
+	responsesResp.Model = requestedModel
+
+	// Non-streaming /responses clients expect a Responses API JSON body, not
+	// the upstream Chat Completions body.
+	c.Header("Content-Type", "application/json")
+	c.JSON(http.StatusOK, responsesResp)
+
+	// Extract usage
+	usage := chatUsageToOpenAIUsage(chatResp.Usage)
+
+	return &OpenAIForwardResult{
+		Model:         requestedModel,
+		BillingModel:  requestedModel,
+		UpstreamModel: gjson.GetBytes(ccBodyBytes, "model").String(),
+		Usage:         usage,
+		Stream:        false,
+		Duration:      time.Since(startTime),
+	}, nil
+}
+
+// ccJSONToSSEStream converts a Chat Completions JSON response to SSE format
+// and streams it to the client. This is used when the client requested
+// streaming but the upstream only supports non-streaming.
+func (s *OpenAIGatewayService) ccJSONToSSEStream(
+	ctx context.Context,
+	c *gin.Context,
+	ccResp map[string]any,
+	model string,
+	startTime time.Time,
+) (*OpenAIForwardResult, error) {
+	ccBodyBytes, err := json.Marshal(ccResp)
+	if err != nil {
+		return nil, fmt.Errorf("marshal CC response: %w", err)
+	}
+	var chatResp apicompat.ChatCompletionsResponse
+	if err := json.Unmarshal(ccBodyBytes, &chatResp); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error": gin.H{
+				"type":    "upstream_error",
+				"message": "Failed to parse upstream response",
+			},
+		})
+		return nil, fmt.Errorf("parse CC response: %w", err)
+	}
+	responsesResp := apicompat.ChatCompletionsToResponsesResponse(&chatResp)
+	responsesResp.Model = model
+	events := buildResponsesSSEFromBufferedResponse(responsesResp)
+
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.WriteHeader(http.StatusOK)
+
+	var firstTokenMs *int
+	for idx, evt := range events {
+		sse, err := apicompat.ResponsesEventToSSE(evt)
+		if err != nil {
+			return nil, fmt.Errorf("marshal responses event: %w", err)
+		}
+		if idx == 1 {
+			ms := int(time.Since(startTime).Milliseconds())
+			firstTokenMs = &ms
+		}
+		if _, err := fmt.Fprint(c.Writer, sse); err != nil {
+			return nil, err
+		}
+	}
+	fmt.Fprint(c.Writer, "data: [DONE]\n\n")
+	c.Writer.Flush()
+
+	return &OpenAIForwardResult{
+		Model:        model,
+		BillingModel: model,
+		Usage:        chatUsageToOpenAIUsage(chatResp.Usage),
+		Stream:       true,
+		Duration:     time.Since(startTime),
+		FirstTokenMs: firstTokenMs,
+	}, nil
+}
+
 func shouldFailoverOpenAIPassthroughResponse(statusCode int) bool {
 	switch statusCode {
 	case http.StatusTooManyRequests, 529:
@@ -3220,6 +3566,17 @@ func shouldFailoverOpenAIPassthroughResponse(statusCode int) bool {
 	default:
 		return false
 	}
+}
+
+// ForwardOpenAIResponsesAsRawCC 将 Responses API 请求转换为 Chat Completions 格式，
+// 转发到 MiniMax 等不支持 /v1/responses 的第三方上游的 /v1/chat/completions。
+// 由 handler 层在检测到 `openai_responses_supported=false` 时调用。
+func (s *OpenAIGatewayService) ForwardOpenAIResponsesAsRawCC(ctx context.Context, c *gin.Context, account *Account, body []byte, model string, startTime time.Time) (*OpenAIForwardResult, error) {
+	logger.L().Info("openai_gateway.forward_responses_cc",
+		zap.Int64("account_id", account.ID),
+		zap.String("model", model),
+	)
+	return s.forwardResponsesAsRawChatCompletions(ctx, c, account, body, model, startTime)
 }
 
 func (s *OpenAIGatewayService) handleFailoverErrorResponsePassthrough(

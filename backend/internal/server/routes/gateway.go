@@ -5,10 +5,12 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 // RegisterGatewayRoutes 注册 API 网关路由（Claude/OpenAI/Gemini 兼容）
@@ -66,7 +68,9 @@ func RegisterGatewayRoutes(
 		gateway.GET("/usage", h.Gateway.Usage)
 		// OpenAI Responses API: auto-route based on group platform
 		gateway.POST("/responses", func(c *gin.Context) {
-			if getGroupPlatform(c) == service.PlatformOpenAI {
+			platform := getGroupPlatform(c)
+			logger.L().Info("ROUTE_responses_ENTERED", zap.String("group_platform", platform))
+			if platform == service.PlatformOpenAI {
 				h.OpenAIGateway.Responses(c)
 				return
 			}
@@ -111,6 +115,32 @@ func RegisterGatewayRoutes(
 				return
 			}
 			h.OpenAIGateway.Images(c)
+		})
+		gateway.POST("/videos/generations", func(c *gin.Context) {
+			if getGroupPlatform(c) != service.PlatformOpenAI {
+				c.JSON(http.StatusNotFound, gin.H{
+					"error": gin.H{
+						"type":    "not_found_error",
+						"message": "Videos API is not supported for this platform",
+					},
+				})
+				return
+			}
+			h.OpenAIGateway.Videos(c)
+		})
+		gateway.POST("/audio/speech", func(c *gin.Context) {
+			if getGroupPlatform(c) != service.PlatformOpenAI {
+				c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Audio API is not supported for this platform"}})
+				return
+			}
+			h.OpenAIGateway.AudioSpeech(c)
+		})
+		gateway.POST("/music/generations", func(c *gin.Context) {
+			if getGroupPlatform(c) != service.PlatformOpenAI {
+				c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Music API is not supported for this platform"}})
+				return
+			}
+			h.OpenAIGateway.Music(c)
 		})
 	}
 
@@ -178,6 +208,32 @@ func RegisterGatewayRoutes(
 			return
 		}
 		h.OpenAIGateway.Images(c)
+	})
+	r.POST("/videos/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
+		if getGroupPlatform(c) != service.PlatformOpenAI {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": gin.H{
+					"type":    "not_found_error",
+					"message": "Videos API is not supported for this platform",
+				},
+			})
+			return
+		}
+		h.OpenAIGateway.Videos(c)
+	})
+	r.POST("/audio/speech", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
+		if getGroupPlatform(c) != service.PlatformOpenAI {
+			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Audio API is not supported for this platform"}})
+			return
+		}
+		h.OpenAIGateway.AudioSpeech(c)
+	})
+	r.POST("/music/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
+		if getGroupPlatform(c) != service.PlatformOpenAI {
+			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Music API is not supported for this platform"}})
+			return
+		}
+		h.OpenAIGateway.Music(c)
 	})
 
 	// Antigravity 模型列表
