@@ -102,6 +102,15 @@ describe('AccountTestModal', () => {
     getAvailableModelsMock.mockResolvedValue([
       { id: 'gpt-5.4', display_name: 'GPT-5.4' }
     ])
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: {
+        getItem: vi.fn((key: string) => (key === 'auth_token' ? 'test-token' : null)),
+        setItem: vi.fn(),
+        removeItem: vi.fn(),
+        clear: vi.fn()
+      },
+      configurable: true
+    })
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       body: {
@@ -110,7 +119,6 @@ describe('AccountTestModal', () => {
         })
       }
     } as any)
-    localStorage.setItem('auth_token', 'test-token')
   })
 
   afterEach(() => {
@@ -145,6 +153,46 @@ describe('AccountTestModal', () => {
     expect(JSON.parse(options.body)).toMatchObject({
       model_id: 'gpt-5.4',
       mode: 'compact'
+    })
+  })
+
+  it('posts prompt for Claude music media tests', async () => {
+    getAvailableModelsMock.mockResolvedValue([
+      { id: 'claude-music-1', display_name: 'Claude Music 1' }
+    ])
+    const wrapper = mount(AccountTestModal, {
+      props: {
+        show: true,
+        account: {
+          ...buildAccount(),
+          id: 2,
+          name: 'Claude Music',
+          platform: 'anthropic',
+          type: 'apikey'
+        }
+      },
+      global: {
+        stubs: {
+          BaseDialog: BaseDialogStub,
+          Select: SelectStub,
+          TextArea: TextAreaStub,
+          Icon: true
+        }
+      }
+    })
+
+    await flushPromises()
+    ;(wrapper.vm as any).selectedModelId = 'claude-music-1'
+    ;(wrapper.vm as any).testPrompt = 'lofi piano melody'
+    await (wrapper.vm as any).startTest()
+    await flushPromises()
+
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+    const [, options] = (global.fetch as any).mock.calls[0]
+    expect(JSON.parse(options.body)).toMatchObject({
+      model_id: 'claude-music-1',
+      prompt: 'lofi piano melody',
+      mode: 'default'
     })
   })
 })

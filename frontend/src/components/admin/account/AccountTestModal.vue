@@ -55,12 +55,12 @@
         />
       </div>
 
-      <div v-if="supportsImageTest" class="space-y-1.5">
+      <div v-if="supportsMediaTest" class="space-y-1.5">
         <TextArea
           v-model="testPrompt"
-          :label="t('admin.accounts.imagePromptLabel')"
-          :placeholder="t('admin.accounts.imagePromptPlaceholder')"
-          :hint="t('admin.accounts.imageTestHint')"
+          :label="mediaPromptLabel"
+          :placeholder="mediaPromptPlaceholder"
+          :hint="mediaTestHint"
           :disabled="status === 'connecting'"
           rows="3"
         />
@@ -144,7 +144,7 @@
 
       <div v-if="generatedVideos.length > 0" class="space-y-2">
         <div class="text-xs font-medium text-gray-600 dark:text-gray-300">
-          Video Preview
+          {{ t('admin.accounts.videoPreview') }}
         </div>
         <div class="space-y-3">
           <div
@@ -162,7 +162,7 @@
 
       <div v-if="generatedAudios.length > 0" class="space-y-2">
         <div class="text-xs font-medium text-gray-600 dark:text-gray-300">
-          Audio Preview
+          {{ t('admin.accounts.audioPreview') }}
         </div>
         <div class="space-y-2">
           <div
@@ -212,8 +212,8 @@
         <span class="flex items-center gap-1">
           <Icon name="chat" size="sm" :stroke-width="2" />
           {{
-            supportsImageTest
-              ? t('admin.accounts.imageTestMode')
+            supportsMediaTest
+              ? mediaTestModeLabel
               : t('admin.accounts.testPrompt')
           }}
         </span>
@@ -324,11 +324,41 @@ const supportsGeminiImageTest = computed(() => {
 
 const supportsOpenAIImageTest = computed(() => {
   const modelID = selectedModelId.value.toLowerCase()
-  if (!modelID.startsWith('gpt-image-')) return false
-  return props.account?.platform === 'openai'
+  if (!modelID.startsWith('gpt-image-') && !modelID.startsWith('claude-image-')) return false
+  return props.account?.platform === 'openai' || props.account?.platform === 'anthropic'
 })
 
 const supportsImageTest = computed(() => supportsGeminiImageTest.value || supportsOpenAIImageTest.value)
+
+const selectedModelLower = computed(() => selectedModelId.value.toLowerCase())
+const supportsVideoTest = computed(() => selectedModelLower.value.startsWith('gpt-video-') || selectedModelLower.value.startsWith('claude-video-'))
+const supportsSpeechTest = computed(() => (
+  selectedModelLower.value === 'gpt-4o-mini-tts' ||
+  selectedModelLower.value.startsWith('tts-') ||
+  selectedModelLower.value.startsWith('gpt-audio-') ||
+  selectedModelLower.value.startsWith('claude-audio-') ||
+  selectedModelLower.value.startsWith('claude-speech-')
+))
+const supportsMusicTest = computed(() => selectedModelLower.value.startsWith('gpt-music-') || selectedModelLower.value.startsWith('claude-music-') || selectedModelLower.value === 'music')
+const supportsMediaTest = computed(() => supportsImageTest.value || supportsVideoTest.value || supportsSpeechTest.value || supportsMusicTest.value)
+const mediaKind = computed<'image' | 'video' | 'speech' | 'music' | 'text'>(() => {
+  if (supportsImageTest.value) return 'image'
+  if (supportsVideoTest.value) return 'video'
+  if (supportsSpeechTest.value) return 'speech'
+  if (supportsMusicTest.value) return 'music'
+  return 'text'
+})
+const mediaPromptLabel = computed(() => t(`admin.accounts.mediaPrompt.${mediaKind.value}.label`))
+const mediaPromptPlaceholder = computed(() => t(`admin.accounts.mediaPrompt.${mediaKind.value}.placeholder`))
+const mediaTestHint = computed(() => t(`admin.accounts.mediaPrompt.${mediaKind.value}.hint`))
+const mediaTestModeLabel = computed(() => t(`admin.accounts.mediaPrompt.${mediaKind.value}.mode`))
+const mediaRequestLabel = computed(() => t(`admin.accounts.mediaPrompt.${mediaKind.value}.sending`))
+const defaultMediaPrompts: Record<'image' | 'video' | 'speech' | 'music', string> = {
+  image: 'Generate a cute orange cat astronaut sticker on a clean pastel background.',
+  video: 'A tiny robot walking through a neon city street, cinematic camera movement.',
+  speech: 'Hello from MiniMax speech synthesis.',
+  music: 'A short uplifting piano melody.'
+}
 
 const formatDuration = (durationMs: number) => {
   const totalSeconds = Math.max(0, Math.round(durationMs / 1000))
@@ -363,8 +393,14 @@ watch(
 )
 
 watch(selectedModelId, () => {
-  if (supportsImageTest.value && !testPrompt.value.trim()) {
-    testPrompt.value = t('admin.accounts.imagePromptDefault')
+  if (supportsMediaTest.value && !testPrompt.value.trim()) {
+    const kind = mediaKind.value
+    if (kind !== 'text') {
+      testPrompt.value = t(`admin.accounts.mediaPrompt.${kind}.default`)
+      if (testPrompt.value.includes('admin.accounts.mediaPrompt.')) {
+        testPrompt.value = defaultMediaPrompts[kind]
+      }
+    }
   }
 })
 
@@ -458,9 +494,9 @@ const startTest = async () => {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-              model_id: selectedModelId.value,
-              prompt: supportsImageTest.value ? testPrompt.value.trim() : ''
-            }),
+        model_id: selectedModelId.value,
+        prompt: supportsMediaTest.value ? testPrompt.value.trim() : ''
+      }),
       signal: abortController.signal
     })
 
@@ -529,8 +565,8 @@ const handleEvent = (event: {
         addLine(t('admin.accounts.usingModel', { model: event.model }), 'text-cyan-400')
       }
       addLine(
-        supportsImageTest.value
-            ? t('admin.accounts.sendingImageRequest')
+        supportsMediaTest.value
+            ? mediaRequestLabel.value
             : t('admin.accounts.sendingTestMessage'),
         'text-gray-400'
       )
@@ -561,7 +597,7 @@ const handleEvent = (event: {
           url: event.video_url,
           mimeType: event.mime_type
         })
-        addLine(`Video received (${generatedVideos.value.length})`, 'text-purple-300')
+        addLine(t('admin.accounts.videoReceived', { count: generatedVideos.value.length }), 'text-purple-300')
       }
       break
 
@@ -572,7 +608,7 @@ const handleEvent = (event: {
           mimeType: event.mime_type,
           durationMs: event.duration_ms
         })
-        addLine(`Audio received (${generatedAudios.value.length})`, 'text-purple-300')
+        addLine(t('admin.accounts.audioReceived', { count: generatedAudios.value.length }), 'text-purple-300')
       }
       break
 

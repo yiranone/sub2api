@@ -727,8 +727,41 @@ func (a *Account) GetBaseURL() string {
 	if baseURL == "" {
 		return "https://api.anthropic.com"
 	}
+	if a.Platform == PlatformAnthropic {
+		return normalizeAnthropicBaseURL(baseURL, "")
+	}
 	if a.Platform == PlatformAntigravity {
 		return strings.TrimRight(baseURL, "/") + "/antigravity"
+	}
+	return baseURL
+}
+
+func (a *Account) GetAnthropicBaseURLForModel(model string) string {
+	if a == nil || a.Type != AccountTypeAPIKey {
+		return ""
+	}
+	baseURL := a.GetCredential("base_url")
+	if baseURL == "" {
+		return "https://api.anthropic.com"
+	}
+	if a.Platform != PlatformAnthropic {
+		return a.GetBaseURL()
+	}
+	return normalizeAnthropicBaseURL(baseURL, model)
+}
+
+func normalizeAnthropicBaseURL(baseURL string, model string) string {
+	normalized := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	lower := strings.ToLower(normalized)
+	if strings.Contains(lower, "minimax") || strings.Contains(lower, "minimaxi") {
+		root := normalized
+		if strings.HasSuffix(lower, "/anthropic") {
+			root = strings.TrimRight(normalized[:len(normalized)-len("/anthropic")], "/")
+		}
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "claude-") {
+			return root + "/anthropic"
+		}
+		return root
 	}
 	return baseURL
 }

@@ -39,6 +39,24 @@ func TestGetBaseURL(t *testing.T) {
 			expected: "https://custom.example.com",
 		},
 		{
+			name: "anthropic minimax base_url uses root host",
+			account: Account{
+				Type:        AccountTypeAPIKey,
+				Platform:    PlatformAnthropic,
+				Credentials: map[string]any{"base_url": "https://api.minimaxi.com"},
+			},
+			expected: "https://api.minimaxi.com",
+		},
+		{
+			name: "anthropic minimax base_url strips explicit anthropic path",
+			account: Account{
+				Type:        AccountTypeAPIKey,
+				Platform:    PlatformAnthropic,
+				Credentials: map[string]any{"base_url": "https://api.minimaxi.com/anthropic/"},
+			},
+			expected: "https://api.minimaxi.com",
+		},
+		{
 			name: "antigravity apikey auto-appends /antigravity",
 			account: Account{
 				Type:        AccountTypeAPIKey,
@@ -74,6 +92,28 @@ func TestGetBaseURL(t *testing.T) {
 				t.Errorf("GetBaseURL() = %q, want %q", result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestGetAnthropicBaseURLForModel(t *testing.T) {
+	account := Account{
+		Type:        AccountTypeAPIKey,
+		Platform:    PlatformAnthropic,
+		Credentials: map[string]any{"base_url": "https://api.minimaxi.com"},
+	}
+	if got := account.GetAnthropicBaseURLForModel("claude-3-5-sonnet-latest"); got != "https://api.minimaxi.com/anthropic" {
+		t.Errorf("GetAnthropicBaseURLForModel(claude) = %q", got)
+	}
+	if got := account.GetAnthropicBaseURLForModel("MiniMax-M1"); got != "https://api.minimaxi.com" {
+		t.Errorf("GetAnthropicBaseURLForModel(MiniMax) = %q", got)
+	}
+
+	account.Credentials["base_url"] = "https://api.minimaxi.com/anthropic"
+	if got := account.GetAnthropicBaseURLForModel("claude-3-5-sonnet-latest"); got != "https://api.minimaxi.com/anthropic" {
+		t.Errorf("GetAnthropicBaseURLForModel(claude explicit anthropic) = %q", got)
+	}
+	if got := account.GetAnthropicBaseURLForModel("MiniMax-M1"); got != "https://api.minimaxi.com" {
+		t.Errorf("GetAnthropicBaseURLForModel(MiniMax explicit anthropic) = %q", got)
 	}
 }
 

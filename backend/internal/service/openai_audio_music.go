@@ -56,7 +56,11 @@ type openAIAudioResult struct {
 
 func isOpenAISpeechModel(model string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(model))
-	return normalized == "gpt-4o-mini-tts" || strings.HasPrefix(normalized, "tts-") || strings.HasPrefix(normalized, "gpt-audio-")
+	return normalized == "gpt-4o-mini-tts" ||
+		strings.HasPrefix(normalized, "tts-") ||
+		strings.HasPrefix(normalized, "gpt-audio-") ||
+		strings.HasPrefix(normalized, "claude-audio-") ||
+		strings.HasPrefix(normalized, "claude-speech-")
 }
 
 func isMiniMaxSpeechModel(model string) bool {
@@ -65,7 +69,9 @@ func isMiniMaxSpeechModel(model string) bool {
 
 func isOpenAIMusicModel(model string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(model))
-	return strings.HasPrefix(normalized, "gpt-music-") || normalized == "music"
+	return strings.HasPrefix(normalized, "gpt-music-") ||
+		strings.HasPrefix(normalized, "claude-music-") ||
+		normalized == "music"
 }
 
 func isMiniMaxMusicModel(model string) bool {
@@ -148,7 +154,7 @@ func buildMiniMaxSpeechURL(base string) string {
 }
 
 func buildMiniMaxMusicURL(base string) string {
-	return buildMiniMaxVideoURL(base, "/v1/music_generation")
+	return buildMiniMaxVideoURL(miniMaxMusicEndpointBase(base), "/v1/music_generation")
 }
 
 func buildMiniMaxSpeechBody(parsed *OpenAIAudioSpeechRequest, model string) ([]byte, string, error) {
@@ -295,7 +301,7 @@ func (s *OpenAIGatewayService) ForwardAudioSpeech(ctx context.Context, c *gin.Co
 		requestModel = mapped
 	}
 	upstreamModel := account.GetMappedModel(requestModel)
-	if !isOpenAICompatMiniMaxProvider(account) || !isMiniMaxSpeechModel(upstreamModel) {
+	if !isMiniMaxMediaProvider(account) || !isMiniMaxSpeechModel(upstreamModel) {
 		return nil, fmt.Errorf("unsupported speech upstream model %q", upstreamModel)
 	}
 	forwardBody, format, err := buildMiniMaxSpeechBody(parsed, upstreamModel)
@@ -334,7 +340,7 @@ func (s *OpenAIGatewayService) ForwardMusic(ctx context.Context, c *gin.Context,
 		requestModel = mapped
 	}
 	upstreamModel := account.GetMappedModel(requestModel)
-	if !isOpenAICompatMiniMaxProvider(account) || !isMiniMaxMusicModel(upstreamModel) {
+	if !isMiniMaxMediaProvider(account) || !isMiniMaxMusicModel(upstreamModel) {
 		return nil, fmt.Errorf("unsupported music upstream model %q", upstreamModel)
 	}
 	forwardBody, format, err := buildMiniMaxMusicBody(parsed, upstreamModel)
@@ -364,28 +370,31 @@ func (s *OpenAIGatewayService) forwardMiniMaxAudio(
 	upstreamModel string,
 ) (openAIAudioResult, http.Header, error) {
 	if account == nil || account.Type != AccountTypeAPIKey {
-		return openAIAudioResult{}, nil, fmt.Errorf("audio and music endpoints currently support OpenAI API key accounts only")
+		return openAIAudioResult{}, nil, fmt.Errorf("audio and music endpoints currently support API key accounts only")
 	}
 	setOpsUpstreamRequestBody(c, body)
-	token, _, err := s.GetAccessToken(ctx, account)
-	if err != nil {
-		return openAIAudioResult{}, nil, err
+	token := miniMaxMediaAPIKey(account)
+	if token == "" {
+		return openAIAudioResult{}, nil, fmt.Errorf("api_key not found in credentials")
 	}
-	baseURL := account.GetOpenAIBaseURL()
-	if baseURL == "" {
-		baseURL = "https://api.minimaxi.com"
-	}
+	baseURL := miniMaxMediaBaseURL(account)
 	validatedURL, err := s.validateUpstreamBaseURL(baseURL)
 	if err != nil {
 		return openAIAudioResult{}, nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, urlBuilder(validatedURL), bytes.NewReader(body))
+	targetURL := urlBuilder(validatedURL)
+	if targetBase := absoluteURLBase(targetURL); targetBase != "" {
+		if _, err := s.validateUpstreamBaseURL(targetBase); err != nil {
+			return openAIAudioResult{}, nil, err
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
 		return openAIAudioResult{}, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
-	if ua := account.GetOpenAIUserAgent(); ua != "" {
+	if ua := miniMaxMediaUserAgent(account); ua != "" {
 		req.Header.Set("User-Agent", ua)
 	}
 	proxyURL := ""

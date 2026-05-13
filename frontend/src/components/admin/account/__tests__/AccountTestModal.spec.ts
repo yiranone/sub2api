@@ -144,4 +144,68 @@ describe('AccountTestModal', () => {
     expect(preview.exists()).toBe(true)
     expect(preview.attributes('src')).toBe('data:image/png;base64,QUJD')
   })
+
+  it('音乐模型测试会携带提示词并渲染音频预览', async () => {
+    getAvailableModels.mockResolvedValue([
+      { id: 'claude-music-1', display_name: 'Claude Music 1' }
+    ])
+    global.fetch = vi.fn().mockResolvedValue(
+      createStreamResponse([
+        'data: {"type":"test_start","model":"music-01"}\n',
+        'data: {"type":"audio","audio_url":"data:audio/mpeg;base64,QUJD","mime_type":"audio/mpeg","duration_ms":4567}\n',
+        'data: {"type":"test_complete","success":true}\n'
+      ])
+    ) as any
+
+    const wrapper = mount(AccountTestModal, {
+      props: {
+        show: false,
+        account: {
+          id: 43,
+          name: 'Claude Music Test',
+          platform: 'anthropic',
+          type: 'apikey',
+          status: 'active'
+        }
+      } as any,
+      global: {
+        stubs: {
+          BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' },
+          Select: { template: '<div class="select-stub"></div>' },
+          TextArea: {
+            props: ['modelValue'],
+            emits: ['update:modelValue'],
+            template: '<textarea class="textarea-stub" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />'
+          },
+          Icon: true
+        }
+      }
+    })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+
+    const promptInput = wrapper.find('textarea.textarea-stub')
+    expect(promptInput.exists()).toBe(true)
+    await promptInput.setValue('lofi piano melody')
+
+    const buttons = wrapper.findAll('button')
+    const startButton = buttons.find((button) => button.text().includes('admin.accounts.startTest'))
+    expect(startButton).toBeTruthy()
+
+    await startButton!.trigger('click')
+    await flushPromises()
+    await flushPromises()
+
+    const [, request] = (global.fetch as any).mock.calls[0]
+    expect(JSON.parse(request.body)).toEqual({
+      model_id: 'claude-music-1',
+      prompt: 'lofi piano melody'
+    })
+
+    const preview = wrapper.find('audio')
+    expect(preview.exists()).toBe(true)
+    expect(preview.attributes('src')).toBe('data:audio/mpeg;base64,QUJD')
+    expect(wrapper.text()).toContain('audio/mpeg')
+    expect(wrapper.text()).toContain('0:05')
+  })
 })

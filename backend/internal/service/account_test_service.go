@@ -65,7 +65,8 @@ const (
 
 // isOpenAIImageModel checks if the model is an OpenAI image generation model (e.g. gpt-image-2).
 func isOpenAIImageModel(model string) bool {
-	return strings.HasPrefix(strings.ToLower(model), "gpt-image-")
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(normalized, "gpt-image-") || strings.HasPrefix(normalized, "claude-image-")
 }
 
 // AccountTestService handles account testing operations
@@ -200,11 +201,11 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 		return s.routeAntigravityTest(c, account, modelID, prompt)
 	}
 
-	return s.testClaudeAccountConnection(c, account, modelID)
+	return s.testClaudeAccountConnection(c, account, modelID, prompt)
 }
 
 // testClaudeAccountConnection tests an Anthropic Claude account's connection
-func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account *Account, modelID string) error {
+func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account *Account, modelID string, prompt string) error {
 	ctx := c.Request.Context()
 
 	// Determine the model to use
@@ -216,6 +217,37 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 	// API Key 账号测试连接时也需要应用通配符模型映射。
 	if account.Type == "apikey" {
 		testModelID = account.GetMappedModel(testModelID)
+	}
+
+	if account.Type == AccountTypeAPIKey {
+		if isOpenAIVideoModel(modelID) || isOpenAIVideoModel(testModelID) || isMiniMaxVideoGenerationModel(testModelID) {
+			testPrompt := strings.TrimSpace(prompt)
+			if testPrompt == "" {
+				testPrompt = defaultOpenAIVideoTestPrompt
+			}
+			return s.testOpenAIVideoAPIKey(c, ctx, account, modelID, testModelID, testPrompt)
+		}
+		if isOpenAISpeechModel(modelID) || isOpenAISpeechModel(testModelID) || isMiniMaxSpeechModel(testModelID) {
+			testPrompt := strings.TrimSpace(prompt)
+			if testPrompt == "" {
+				testPrompt = defaultOpenAIAudioTestPrompt
+			}
+			return s.testOpenAIAudioAPIKey(c, ctx, account, modelID, testModelID, testPrompt)
+		}
+		if isOpenAIMusicModel(modelID) || isOpenAIMusicModel(testModelID) || isMiniMaxMusicModel(testModelID) {
+			testPrompt := strings.TrimSpace(prompt)
+			if testPrompt == "" {
+				testPrompt = defaultOpenAIMusicTestPrompt
+			}
+			return s.testOpenAIMusicAPIKey(c, ctx, account, modelID, testModelID, testPrompt)
+		}
+		if isOpenAIImageModel(modelID) || isOpenAIImageModel(testModelID) || isMiniMaxImageGenerationModel(testModelID) {
+			testPrompt := strings.TrimSpace(prompt)
+			if testPrompt == "" {
+				testPrompt = defaultOpenAIImageTestPrompt
+			}
+			return s.testOpenAIImageAPIKey(c, ctx, account, testModelID, testPrompt)
+		}
 	}
 
 	// Bedrock accounts use a separate test path
@@ -247,7 +279,7 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 			return s.sendErrorAndEnd(c, "No API key available")
 		}
 
-		baseURL := account.GetBaseURL()
+		baseURL := account.GetAnthropicBaseURLForModel(modelID)
 		if baseURL == "" {
 			baseURL = "https://api.anthropic.com"
 		}
@@ -909,7 +941,7 @@ func (s *AccountTestService) routeAntigravityTest(c *gin.Context, account *Accou
 		if strings.HasPrefix(modelID, "gemini-") {
 			return s.testGeminiAccountConnection(c, account, modelID, prompt)
 		}
-		return s.testClaudeAccountConnection(c, account, modelID)
+		return s.testClaudeAccountConnection(c, account, modelID, prompt)
 	}
 	return s.testAntigravityAccountConnection(c, account, modelID)
 }
@@ -1365,21 +1397,26 @@ func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader)
 
 // testOpenAIImageAPIKey tests OpenAI image generation using an API Key account.
 func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.Context, account *Account, modelID, prompt string) error {
-	authToken := account.GetOpenAIApiKey()
+	authToken := miniMaxMediaAPIKey(account)
+	if !isMiniMaxImageGenerationModel(modelID) && account.IsOpenAI() {
+		authToken = account.GetOpenAIApiKey()
+	}
 	if authToken == "" {
 		return s.sendErrorAndEnd(c, "No API key available")
 	}
 
-	baseURL := account.GetOpenAIBaseURL()
-	if baseURL == "" {
-		baseURL = "https://api.openai.com"
+	baseURL := "https://api.openai.com"
+	if isMiniMaxImageGenerationModel(modelID) {
+		baseURL = miniMaxMediaBaseURL(account)
+	} else if account.IsOpenAI() {
+		baseURL = account.GetOpenAIBaseURL()
 	}
 	normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
 	}
 	apiURL := buildOpenAIImagesURL(normalizedBaseURL, openAIImagesGenerationsEndpoint)
-	minimaxImage := isOpenAICompatMiniMaxProvider(account) && isMiniMaxImageGenerationModel(modelID)
+	minimaxImage := isMiniMaxMediaProvider(account) && isMiniMaxImageGenerationModel(modelID)
 	if minimaxImage {
 		apiURL = buildMiniMaxImageGenerationURL(normalizedBaseURL)
 	}
@@ -1505,18 +1542,15 @@ func (s *AccountTestService) testOpenAIVideoAPIKey(c *gin.Context, ctx context.C
 	if account.Type != AccountTypeAPIKey {
 		return s.sendErrorAndEnd(c, "Video generation test currently supports API key accounts only")
 	}
-	if !isOpenAICompatMiniMaxProvider(account) || !isMiniMaxVideoGenerationModel(modelID) {
+	if !isMiniMaxMediaProvider(account) || !isMiniMaxVideoGenerationModel(modelID) {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Unsupported video model mapping: %s -> %s", requestedModelID, modelID))
 	}
 
-	authToken := account.GetOpenAIApiKey()
+	authToken := miniMaxMediaAPIKey(account)
 	if authToken == "" {
 		return s.sendErrorAndEnd(c, "No API key available")
 	}
-	baseURL := account.GetOpenAIBaseURL()
-	if baseURL == "" {
-		baseURL = "https://api.minimaxi.com"
-	}
+	baseURL := miniMaxMediaBaseURL(account)
 	normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
@@ -1566,6 +1600,11 @@ func (s *AccountTestService) runMiniMaxVideoGeneration(ctx context.Context, c *g
 		proxyURL = account.Proxy.URL()
 	}
 	doReq := func(method string, targetURL string, body []byte) ([]byte, error) {
+		if targetBase := absoluteURLBase(targetURL); targetBase != "" {
+			if _, err := s.validateUpstreamBaseURL(targetBase); err != nil {
+				return nil, fmt.Errorf("Invalid target URL: %s", err.Error())
+			}
+		}
 		var reader io.Reader
 		if len(body) > 0 {
 			reader = bytes.NewReader(body)
@@ -1580,20 +1619,22 @@ func (s *AccountTestService) runMiniMaxVideoGeneration(ctx context.Context, c *g
 		}
 		resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 		if err != nil {
-			return nil, fmt.Errorf("Request failed: %s", err.Error())
+			return nil, fmt.Errorf("Request failed for %s: %s", targetURL, err.Error())
 		}
 		defer func() { _ = resp.Body.Close() }()
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return nil, fmt.Errorf("Failed to read response: %s", err.Error())
+			return nil, fmt.Errorf("Failed to read response from %s: %s", targetURL, err.Error())
 		}
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, string(respBody))
+			return nil, fmt.Errorf("API returned %d from %s: %s", resp.StatusCode, targetURL, string(respBody))
 		}
 		return respBody, nil
 	}
 
-	createBody, err := doReq(http.MethodPost, buildMiniMaxVideoGenerationURL(baseURL), payloadBytes)
+	createURL := buildMiniMaxVideoGenerationURL(baseURL)
+	log.Printf("MiniMax video_generation request url: %s", createURL)
+	createBody, err := doReq(http.MethodPost, createURL, payloadBytes)
 	if err != nil {
 		return openAIVideoTestResult{}, err
 	}
@@ -1663,7 +1704,7 @@ func (s *AccountTestService) testOpenAIAudioAPIKey(c *gin.Context, ctx context.C
 	if account.Type != AccountTypeAPIKey {
 		return s.sendErrorAndEnd(c, "Audio test currently supports API key accounts only")
 	}
-	if !isOpenAICompatMiniMaxProvider(account) || !isMiniMaxSpeechModel(modelID) {
+	if !isMiniMaxMediaProvider(account) || !isMiniMaxSpeechModel(modelID) {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Unsupported speech model mapping: %s -> %s", requestedModelID, modelID))
 	}
 	baseURL, authToken, err := s.openAIMediaTestBase(c, account)
@@ -1689,7 +1730,7 @@ func (s *AccountTestService) testOpenAIMusicAPIKey(c *gin.Context, ctx context.C
 	if account.Type != AccountTypeAPIKey {
 		return s.sendErrorAndEnd(c, "Music test currently supports API key accounts only")
 	}
-	if !isOpenAICompatMiniMaxProvider(account) || !isMiniMaxMusicModel(modelID) {
+	if !isMiniMaxMediaProvider(account) || !isMiniMaxMusicModel(modelID) {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Unsupported music model mapping: %s -> %s", requestedModelID, modelID))
 	}
 	baseURL, authToken, err := s.openAIMediaTestBase(c, account)
@@ -1702,7 +1743,8 @@ func (s *AccountTestService) testOpenAIMusicAPIKey(c *gin.Context, ctx context.C
 	if buildErr != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to build music request: %s", buildErr.Error()))
 	}
-	result, err := s.runMiniMaxAudioRequest(ctx, account, authToken, buildMiniMaxMusicURL(baseURL), payloadBytes, format, modelID)
+	targetURL := buildMiniMaxMusicURL(baseURL)
+	result, err := s.runMiniMaxAudioRequest(ctx, account, authToken, targetURL, payloadBytes, format, modelID)
 	if err != nil {
 		return s.sendErrorAndEnd(c, err.Error())
 	}
@@ -1712,14 +1754,11 @@ func (s *AccountTestService) testOpenAIMusicAPIKey(c *gin.Context, ctx context.C
 }
 
 func (s *AccountTestService) openAIMediaTestBase(c *gin.Context, account *Account) (string, string, error) {
-	authToken := account.GetOpenAIApiKey()
+	authToken := miniMaxMediaAPIKey(account)
 	if authToken == "" {
 		return "", "", s.sendErrorAndEnd(c, "No API key available")
 	}
-	baseURL := account.GetOpenAIBaseURL()
-	if baseURL == "" {
-		baseURL = "https://api.minimaxi.com"
-	}
+	baseURL := miniMaxMediaBaseURL(account)
 	normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
 	if err != nil {
 		return "", "", s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
@@ -1733,6 +1772,11 @@ func (s *AccountTestService) openAIMediaTestBase(c *gin.Context, account *Accoun
 }
 
 func (s *AccountTestService) runMiniMaxAudioRequest(ctx context.Context, account *Account, authToken string, targetURL string, payloadBytes []byte, format string, modelID string) (openAIAudioResult, error) {
+	if targetBase := absoluteURLBase(targetURL); targetBase != "" {
+		if _, err := s.validateUpstreamBaseURL(targetBase); err != nil {
+			return openAIAudioResult{}, fmt.Errorf("Invalid target URL: %s", err.Error())
+		}
+	}
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
@@ -1753,7 +1797,7 @@ func (s *AccountTestService) runMiniMaxAudioRequest(ctx context.Context, account
 		return openAIAudioResult{}, fmt.Errorf("Failed to read response: %s", err.Error())
 	}
 	if resp.StatusCode != http.StatusOK {
-		return openAIAudioResult{}, fmt.Errorf("API returned %d: %s", resp.StatusCode, string(respBody))
+		return openAIAudioResult{}, fmt.Errorf("API returned %d from %s: %s", resp.StatusCode, targetURL, string(respBody))
 	}
 	result, err := convertMiniMaxAudioResponse(respBody, format, modelID)
 	if err != nil {

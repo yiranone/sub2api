@@ -3885,6 +3885,52 @@ export default {
       imageTestMode: '模式：生图测试',
       imagePreview: '生成结果：',
       imageReceived: '已收到第 {count} 张测试图片',
+      videoPreview: '视频预览：',
+      audioPreview: '音频预览：',
+      videoReceived: '已收到第 {count} 个测试视频',
+      audioReceived: '已收到第 {count} 个测试音频',
+      mediaPrompt: {
+        image: {
+          label: '生图提示词',
+          placeholder: '例如：生成一只戴宇航员头盔的橘猫，像素插画风格，纯色背景。',
+          default: 'Generate a cute orange cat astronaut sticker on a clean pastel background.',
+          hint: '选择图片模型后，这里会直接发起生图测试，并在下方展示返回图片。',
+          mode: '模式：生图测试',
+          sending: '发送生图测试请求...'
+        },
+        video: {
+          label: '视频提示词',
+          placeholder: '例如：夜晚霓虹街道上，一个小机器人向镜头走来，电影感运镜。',
+          default: 'A tiny robot walking through a neon city street, cinematic camera movement.',
+          hint: '选择视频模型后，这里会发起视频生成任务并展示返回视频。',
+          mode: '模式：视频生成测试',
+          sending: '发送视频生成测试请求...'
+        },
+        speech: {
+          label: '语音文本',
+          placeholder: '例如：Hello from MiniMax speech synthesis.',
+          default: 'Hello from MiniMax speech synthesis.',
+          hint: '选择语音模型后，这里会发起文本转语音测试并展示返回音频。',
+          mode: '模式：语音合成测试',
+          sending: '发送语音合成测试请求...'
+        },
+        music: {
+          label: '音乐提示词',
+          placeholder: '例如：A short uplifting piano melody.',
+          default: 'A short uplifting piano melody.',
+          hint: '选择音乐模型后，这里会发起音乐生成测试并展示返回音频。',
+          mode: '模式：音乐生成测试',
+          sending: '发送音乐生成测试请求...'
+        },
+        text: {
+          label: '测试提示词',
+          placeholder: 'hi',
+          default: 'hi',
+          hint: '发送普通文本测试消息。',
+          mode: '模式：文本测试',
+          sending: '发送测试消息...'
+        }
+      },
       // Stats Modal
       viewStats: '查看统计',
       usageStatistics: '使用统计',

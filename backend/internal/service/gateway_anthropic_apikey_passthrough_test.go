@@ -266,6 +266,59 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardCountTokensPreservesBo
 	require.Empty(t, rec.Header().Get("Set-Cookie"))
 }
 
+func TestGatewayService_AnthropicAPIKeyPassthrough_MiniMaxBaseURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	svc := &GatewayService{cfg: &config.Config{}}
+	account := &Account{
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "upstream-minimax-key",
+			"base_url": "https://api.minimaxi.com",
+		},
+		Extra: map[string]any{"anthropic_passthrough": true},
+	}
+
+	req, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"MiniMax-M1"}`), "upstream-minimax-key", "MiniMax-M1")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.minimaxi.com/v1/messages?beta=true", req.URL.String())
+	require.Equal(t, "upstream-minimax-key", getHeaderRaw(req.Header, "x-api-key"))
+
+	req, err = svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"claude-3-5-sonnet-latest"}`), "upstream-minimax-key", "claude-3-5-sonnet-latest")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.minimaxi.com/anthropic/v1/messages?beta=true", req.URL.String())
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_MiniMaxCountTokensBaseURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", nil)
+
+	svc := &GatewayService{cfg: &config.Config{}}
+	account := &Account{
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "upstream-minimax-key",
+			"base_url": "https://api.minimaxi.com/anthropic",
+		},
+		Extra: map[string]any{"anthropic_passthrough": true},
+	}
+
+	req, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"MiniMax-M1"}`), "upstream-minimax-key", "MiniMax-M1")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.minimaxi.com/v1/messages/count_tokens?beta=true", req.URL.String())
+
+	req, err = svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"claude-3-5-sonnet-latest"}`), "upstream-minimax-key", "claude-3-5-sonnet-latest")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.minimaxi.com/anthropic/v1/messages/count_tokens?beta=true", req.URL.String())
+}
+
 // TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingEdgeCases 覆盖透传模式下模型映射的各种边界情况
 func TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingEdgeCases(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -658,7 +711,7 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_BuildRequestRejectsInvalidBas
 		},
 	}
 
-	_, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{}`), "k")
+	_, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{}`), "k", "")
 	require.Error(t, err)
 }
 

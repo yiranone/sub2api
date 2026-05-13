@@ -457,7 +457,8 @@ func applyOpenAIImagesDefaults(req *OpenAIImagesRequest) {
 }
 
 func isOpenAIImageGenerationModel(model string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-image-")
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(normalized, "gpt-image-") || strings.HasPrefix(normalized, "claude-image-")
 }
 
 func validateOpenAIImagesModel(model string) error {
@@ -622,7 +623,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		return nil, err
 	}
 	upstreamModel := account.GetMappedModel(requestModel)
-	minimaxImage := isOpenAICompatMiniMaxProvider(account) && isMiniMaxImageGenerationModel(upstreamModel)
+	minimaxImage := isMiniMaxMediaProvider(account) && isMiniMaxImageGenerationModel(upstreamModel)
 	if !minimaxImage {
 		if err := validateOpenAIImagesModel(upstreamModel); err != nil {
 			return nil, err
@@ -667,16 +668,24 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, parsed.Stream)
 	defer releaseUpstreamCtx()
 
-	token, _, err := s.GetAccessToken(upstreamCtx, account)
-	if err != nil {
-		return nil, err
+	token := ""
+	if minimaxImage {
+		token = miniMaxMediaAPIKey(account)
+		if token == "" {
+			return nil, fmt.Errorf("api_key not found in credentials")
+		}
+	} else {
+		token, _, err = s.GetAccessToken(upstreamCtx, account)
+		if err != nil {
+			return nil, err
+		}
 	}
 	upstreamReq, err := s.buildOpenAIImagesRequest(upstreamCtx, c, account, forwardBody, forwardContentType, token, parsed.Endpoint)
 	if err != nil {
 		return nil, err
 	}
 	if minimaxImage {
-		validatedURL, err := s.validateUpstreamBaseURL(account.GetOpenAIBaseURL())
+		validatedURL, err := s.validateUpstreamBaseURL(miniMaxMediaBaseURL(account))
 		if err != nil {
 			return nil, err
 		}
@@ -799,7 +808,7 @@ func isMiniMaxImageGenerationModel(model string) bool {
 }
 
 func buildMiniMaxImageGenerationURL(base string) string {
-	normalized := strings.TrimRight(strings.TrimSpace(base), "/")
+	normalized := normalizeMiniMaxEndpointBase(base, miniMaxDefaultBaseURL)
 	if normalized == "" {
 		return miniMaxImagesGenerationURL
 	}

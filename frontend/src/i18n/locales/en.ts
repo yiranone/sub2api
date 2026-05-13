@@ -3757,6 +3757,52 @@ export default {
       imageTestMode: 'Mode: Image generation test',
       imagePreview: 'Generated images:',
       imageReceived: 'Received test image #{count}',
+      videoPreview: 'Video preview:',
+      audioPreview: 'Audio preview:',
+      videoReceived: 'Received test video #{count}',
+      audioReceived: 'Received test audio #{count}',
+      mediaPrompt: {
+        image: {
+          label: 'Image prompt',
+          placeholder: 'Example: Generate an orange cat astronaut sticker in pixel-art style on a solid background.',
+          default: 'Generate a cute orange cat astronaut sticker on a clean pastel background.',
+          hint: 'When an image model is selected, this test sends a real image-generation request and previews the returned image below.',
+          mode: 'Mode: image generation test',
+          sending: 'Sending image generation test request...'
+        },
+        video: {
+          label: 'Video prompt',
+          placeholder: 'Example: A tiny robot walking through a neon city street, cinematic camera movement.',
+          default: 'A tiny robot walking through a neon city street, cinematic camera movement.',
+          hint: 'When a video model is selected, this test starts a video generation task and previews the returned video below.',
+          mode: 'Mode: video generation test',
+          sending: 'Sending video generation test request...'
+        },
+        speech: {
+          label: 'Speech text',
+          placeholder: 'Example: Hello from MiniMax speech synthesis.',
+          default: 'Hello from MiniMax speech synthesis.',
+          hint: 'When a speech model is selected, this test sends a text-to-speech request and previews the returned audio below.',
+          mode: 'Mode: speech synthesis test',
+          sending: 'Sending speech synthesis test request...'
+        },
+        music: {
+          label: 'Music prompt',
+          placeholder: 'Example: A short uplifting piano melody.',
+          default: 'A short uplifting piano melody.',
+          hint: 'When a music model is selected, this test sends a music generation request and previews the returned audio below.',
+          mode: 'Mode: music generation test',
+          sending: 'Sending music generation test request...'
+        },
+        text: {
+          label: 'Test prompt',
+          placeholder: 'hi',
+          default: 'hi',
+          hint: 'Sends a regular text test message.',
+          mode: 'Mode: text test',
+          sending: 'Sending test message...'
+        }
+      },
       // Stats Modal
       viewStats: 'View Stats',
       usageStatistics: 'Usage Statistics',

@@ -81,6 +81,17 @@ func TestOpenAIGatewayServiceForwardVideos_APIKeyMiniMaxMappedModel(t *testing.T
 	require.Equal(t, "file-456", gjson.GetBytes(rec.Body.Bytes(), "data.0.file_id").String())
 }
 
+func TestBuildMiniMaxVideoURLNormalizesConfiguredEndpoint(t *testing.T) {
+	require.Equal(t, "https://api.minimaxi.com/v1/video_generation", buildMiniMaxVideoGenerationURL("https://api.minimaxi.com"))
+	require.Equal(t, "https://api.minimaxi.com/v1/video_generation", buildMiniMaxVideoGenerationURL("https://api.minimaxi.com/anthropic"))
+	require.Equal(t, "https://api.minimaxi.com/v1/video_generation", buildMiniMaxVideoGenerationURL("https://api.minimaxi.com/anthropic/v1/messages"))
+	require.Equal(t, "https://api.minimaxi.com/v1/video_generation", buildMiniMaxVideoGenerationURL("https://api.minimaxi.com/v1/chat/completions"))
+	require.Equal(t, "https://api.minimaxi.com/v1/video_generation", buildMiniMaxVideoGenerationURL("https://api.minimaxi.com/v1/text/chatcompletion_v2"))
+	require.Equal(t, "https://api.minimaxi.com/v1/video_generation", buildMiniMaxVideoGenerationURL("https://api.minimaxi.com/v1/video_generation"))
+	require.Equal(t, "https://api.minimaxi.com/v1/query/video_generation?task_id=task-123", buildMiniMaxVideoQueryURL("https://api.minimaxi.com/v1/chat/completions", "task-123"))
+	require.Equal(t, "https://api.minimaxi.com/v1/files/retrieve?file_id=file-456", buildMiniMaxVideoFileRetrieveURL("https://api.minimaxi.com/v1/chat/completions", "file-456"))
+}
+
 func TestOpenAIGatewayServiceForwardVideos_MiniMaxBaseRespError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-video-1","prompt":"make a short video"}`)

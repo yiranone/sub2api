@@ -93,54 +93,19 @@ func RegisterGatewayRoutes(
 			h.Gateway.ChatCompletions(c)
 		})
 		gateway.POST("/images/generations", func(c *gin.Context) {
-			if getGroupPlatform(c) != service.PlatformOpenAI {
-				c.JSON(http.StatusNotFound, gin.H{
-					"error": gin.H{
-						"type":    "not_found_error",
-						"message": "Images API is not supported for this platform",
-					},
-				})
-				return
-			}
-			h.OpenAIGateway.Images(c)
+			routeMediaImages(c, h)
 		})
 		gateway.POST("/images/edits", func(c *gin.Context) {
-			if getGroupPlatform(c) != service.PlatformOpenAI {
-				c.JSON(http.StatusNotFound, gin.H{
-					"error": gin.H{
-						"type":    "not_found_error",
-						"message": "Images API is not supported for this platform",
-					},
-				})
-				return
-			}
-			h.OpenAIGateway.Images(c)
+			routeMediaImages(c, h)
 		})
 		gateway.POST("/videos/generations", func(c *gin.Context) {
-			if getGroupPlatform(c) != service.PlatformOpenAI {
-				c.JSON(http.StatusNotFound, gin.H{
-					"error": gin.H{
-						"type":    "not_found_error",
-						"message": "Videos API is not supported for this platform",
-					},
-				})
-				return
-			}
-			h.OpenAIGateway.Videos(c)
+			routeMediaVideos(c, h)
 		})
 		gateway.POST("/audio/speech", func(c *gin.Context) {
-			if getGroupPlatform(c) != service.PlatformOpenAI {
-				c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Audio API is not supported for this platform"}})
-				return
-			}
-			h.OpenAIGateway.AudioSpeech(c)
+			routeMediaAudioSpeech(c, h)
 		})
 		gateway.POST("/music/generations", func(c *gin.Context) {
-			if getGroupPlatform(c) != service.PlatformOpenAI {
-				c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Music API is not supported for this platform"}})
-				return
-			}
-			h.OpenAIGateway.Music(c)
+			routeMediaMusic(c, h)
 		})
 	}
 
@@ -186,54 +151,19 @@ func RegisterGatewayRoutes(
 		h.Gateway.ChatCompletions(c)
 	})
 	r.POST("/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
-		if getGroupPlatform(c) != service.PlatformOpenAI {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": gin.H{
-					"type":    "not_found_error",
-					"message": "Images API is not supported for this platform",
-				},
-			})
-			return
-		}
-		h.OpenAIGateway.Images(c)
+		routeMediaImages(c, h)
 	})
 	r.POST("/images/edits", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
-		if getGroupPlatform(c) != service.PlatformOpenAI {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": gin.H{
-					"type":    "not_found_error",
-					"message": "Images API is not supported for this platform",
-				},
-			})
-			return
-		}
-		h.OpenAIGateway.Images(c)
+		routeMediaImages(c, h)
 	})
 	r.POST("/videos/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
-		if getGroupPlatform(c) != service.PlatformOpenAI {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": gin.H{
-					"type":    "not_found_error",
-					"message": "Videos API is not supported for this platform",
-				},
-			})
-			return
-		}
-		h.OpenAIGateway.Videos(c)
+		routeMediaVideos(c, h)
 	})
 	r.POST("/audio/speech", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
-		if getGroupPlatform(c) != service.PlatformOpenAI {
-			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Audio API is not supported for this platform"}})
-			return
-		}
-		h.OpenAIGateway.AudioSpeech(c)
+		routeMediaAudioSpeech(c, h)
 	})
 	r.POST("/music/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
-		if getGroupPlatform(c) != service.PlatformOpenAI {
-			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Music API is not supported for this platform"}})
-			return
-		}
-		h.OpenAIGateway.Music(c)
+		routeMediaMusic(c, h)
 	})
 
 	// Antigravity 模型列表
@@ -278,4 +208,36 @@ func getGroupPlatform(c *gin.Context) string {
 		return ""
 	}
 	return apiKey.Group.Platform
+}
+
+func routeMediaImages(c *gin.Context, h *handler.Handlers) {
+	routeMedia(c, "Images", func() { h.OpenAIGateway.Images(c) }, func() { h.Gateway.Images(c) })
+}
+
+func routeMediaVideos(c *gin.Context, h *handler.Handlers) {
+	routeMedia(c, "Videos", func() { h.OpenAIGateway.Videos(c) }, func() { h.Gateway.Videos(c) })
+}
+
+func routeMediaAudioSpeech(c *gin.Context, h *handler.Handlers) {
+	routeMedia(c, "Audio", func() { h.OpenAIGateway.AudioSpeech(c) }, func() { h.Gateway.AudioSpeech(c) })
+}
+
+func routeMediaMusic(c *gin.Context, h *handler.Handlers) {
+	routeMedia(c, "Music", func() { h.OpenAIGateway.Music(c) }, func() { h.Gateway.Music(c) })
+}
+
+func routeMedia(c *gin.Context, apiName string, openAIHandler func(), claudeHandler func()) {
+	switch getGroupPlatform(c) {
+	case service.PlatformOpenAI:
+		openAIHandler()
+	case service.PlatformAnthropic:
+		claudeHandler()
+	default:
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": gin.H{
+				"type":    "not_found_error",
+				"message": apiName + " API is not supported for this platform",
+			},
+		})
+	}
 }

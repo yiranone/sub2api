@@ -111,6 +111,16 @@ func TestOpenAIGatewayServiceForwardMusic_APIKeyMiniMaxMappedModel(t *testing.T)
 	require.Equal(t, int64(4567), gjson.GetBytes(rec.Body.Bytes(), "data.0.duration_ms").Int())
 }
 
+func TestBuildMiniMaxMusicURLNormalizesConfiguredEndpoint(t *testing.T) {
+	require.Equal(t, "https://api.minimaxi.com/v1/music_generation", buildMiniMaxMusicURL("https://api.minimaxi.com"))
+	require.Equal(t, "https://api.minimaxi.com/v1/music_generation", buildMiniMaxMusicURL("https://api.minimaxi.com/anthropic"))
+	require.Equal(t, "https://api.minimaxi.com/v1/music_generation", buildMiniMaxMusicURL("https://api.minimaxi.com/anthropic/v1/messages"))
+	require.Equal(t, "https://api.minimaxi.com/v1/music_generation", buildMiniMaxMusicURL("https://api.minimaxi.com/v1/chat/completions"))
+	require.Equal(t, "https://api.minimaxi.com/v1/music_generation", buildMiniMaxMusicURL("https://api.minimaxi.com/v1/text/chatcompletion_v2"))
+	require.Equal(t, "https://api.minimaxi.com/v1/music_generation", buildMiniMaxMusicURL("https://api.minimaxi.com/v1/music_generation"))
+	require.Equal(t, "https://api.minimax.io/v1/music_generation", buildMiniMaxMusicURL("https://api.minimax.io/v1/chat/completions"))
+}
+
 func TestConvertMiniMaxAudioResponseHexFallback(t *testing.T) {
 	result, err := convertMiniMaxAudioResponse([]byte(`{"data":{"audio":"68656c6c6f"},"extra_info":{"audio_length":1234},"base_resp":{"status_code":0,"status_msg":"success"}}`), "mp3", "speech-02-hd")
 	require.NoError(t, err)

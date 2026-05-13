@@ -40,7 +40,8 @@ type OpenAIVideosRequest struct {
 }
 
 func isOpenAIVideoModel(model string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-video-")
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(normalized, "gpt-video-") || strings.HasPrefix(normalized, "claude-video-")
 }
 
 func isMiniMaxVideoGenerationModel(model string) bool {
@@ -118,10 +119,7 @@ func buildMiniMaxVideoFileRetrieveURL(base string, fileID string) string {
 }
 
 func buildMiniMaxVideoURL(base string, endpoint string) string {
-	normalized := strings.TrimRight(strings.TrimSpace(base), "/")
-	if normalized == "" {
-		normalized = "https://api.minimaxi.com"
-	}
+	normalized := normalizeMiniMaxEndpointBase(base, miniMaxDefaultBaseURL)
 	relative := strings.TrimPrefix(strings.TrimSpace(endpoint), "/v1")
 	if strings.HasSuffix(normalized, endpoint) || strings.HasSuffix(normalized, relative) {
 		return normalized
@@ -292,7 +290,7 @@ func (s *OpenAIGatewayService) ForwardVideos(
 		return nil, fmt.Errorf("parsed videos request is required")
 	}
 	if account == nil || account.Type != AccountTypeAPIKey {
-		return nil, fmt.Errorf("videos endpoint currently supports OpenAI API key accounts only")
+		return nil, fmt.Errorf("videos endpoint currently supports API key accounts only")
 	}
 	startTime := time.Now()
 	requestModel := strings.TrimSpace(parsed.Model)
@@ -303,7 +301,7 @@ func (s *OpenAIGatewayService) ForwardVideos(
 		return nil, fmt.Errorf("videos endpoint requires a video model, got %q", requestModel)
 	}
 	upstreamModel := account.GetMappedModel(requestModel)
-	if !isOpenAICompatMiniMaxProvider(account) || !isMiniMaxVideoGenerationModel(upstreamModel) {
+	if !isMiniMaxMediaProvider(account) || !isMiniMaxVideoGenerationModel(upstreamModel) {
 		return nil, fmt.Errorf("unsupported video upstream model %q", upstreamModel)
 	}
 
@@ -317,14 +315,11 @@ func (s *OpenAIGatewayService) ForwardVideos(
 	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, false)
 	defer releaseUpstreamCtx()
 
-	token, _, err := s.GetAccessToken(upstreamCtx, account)
-	if err != nil {
-		return nil, err
+	token := miniMaxMediaAPIKey(account)
+	if token == "" {
+		return nil, fmt.Errorf("api_key not found in credentials")
 	}
-	baseURL := account.GetOpenAIBaseURL()
-	if baseURL == "" {
-		baseURL = "https://api.minimaxi.com"
-	}
+	baseURL := miniMaxMediaBaseURL(account)
 	validatedURL, err := s.validateUpstreamBaseURL(baseURL)
 	if err != nil {
 		return nil, err
@@ -427,7 +422,7 @@ func (s *OpenAIGatewayService) doMiniMaxVideoJSON(
 	if len(body) > 0 {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	customUA := account.GetOpenAIUserAgent()
+	customUA := miniMaxMediaUserAgent(account)
 	if customUA != "" {
 		req.Header.Set("User-Agent", customUA)
 	}
