@@ -117,6 +117,12 @@ type Model struct {
 // DefaultModels Claude Code 客户端支持的默认模型列表
 var DefaultModels = []Model{
 	{
+		ID:          "MiniMax-M2.7",
+		Type:        "model",
+		DisplayName: "MiniMax M2.7",
+		CreatedAt:   "2026-05-13T00:00:00Z",
+	},
+	{
 		ID:          "claude-opus-4-5-20251101",
 		Type:        "model",
 		DisplayName: "Claude Opus 4.5",

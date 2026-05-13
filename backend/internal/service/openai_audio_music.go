@@ -24,6 +24,7 @@ const (
 
 	miniMaxSpeechURL             = "https://api.minimaxi.com/v1/t2a_v2"
 	miniMaxMusicURL              = "https://api.minimaxi.com/v1/music_generation"
+	miniMaxLyricsURL             = "https://api.minimaxi.com/v1/lyrics_generation"
 	miniMaxAudioMaxDownloadBytes = 30 << 20
 )
 
@@ -71,11 +72,14 @@ func isOpenAIMusicModel(model string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(model))
 	return strings.HasPrefix(normalized, "gpt-music-") ||
 		strings.HasPrefix(normalized, "claude-music-") ||
-		normalized == "music"
+		normalized == "music" ||
+		normalized == "write_full_song"
 }
 
 func isMiniMaxMusicModel(model string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "music-")
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(normalized, "music-") ||
+		normalized == "write_full_song"
 }
 
 func (s *OpenAIGatewayService) ParseOpenAIAudioSpeechRequest(c *gin.Context, body []byte) (*OpenAIAudioSpeechRequest, error) {
@@ -157,6 +161,10 @@ func buildMiniMaxMusicURL(base string) string {
 	return buildMiniMaxVideoURL(miniMaxMusicEndpointBase(base), "/v1/music_generation")
 }
 
+func buildMiniMaxLyricsURL(base string) string {
+	return buildMiniMaxVideoURL(miniMaxMusicEndpointBase(base), "/v1/lyrics_generation")
+}
+
 func buildMiniMaxSpeechBody(parsed *OpenAIAudioSpeechRequest, model string) ([]byte, string, error) {
 	if parsed == nil {
 		return nil, "", fmt.Errorf("parsed speech request is required")
@@ -178,6 +186,10 @@ func buildMiniMaxSpeechBody(parsed *OpenAIAudioSpeechRequest, model string) ([]b
 }
 
 func buildMiniMaxMusicBody(parsed *OpenAIMusicGenerationRequest, model string) ([]byte, string, error) {
+	return buildMiniMaxMusicBodyWithLyrics(parsed, model, strings.TrimSpace(parsed.Lyrics))
+}
+
+func buildMiniMaxMusicBodyWithLyrics(parsed *OpenAIMusicGenerationRequest, model string, lyrics string) ([]byte, string, error) {
 	if parsed == nil {
 		return nil, "", fmt.Errorf("parsed music request is required")
 	}
@@ -186,25 +198,29 @@ func buildMiniMaxMusicBody(parsed *OpenAIMusicGenerationRequest, model string) (
 	body, _ = sjson.SetBytes(body, "model", strings.TrimSpace(model))
 	body, _ = sjson.SetBytes(body, "prompt", strings.TrimSpace(parsed.Prompt))
 	body, _ = sjson.SetBytes(body, "audio_setting.format", format)
-	body, _ = sjson.SetBytes(body, "lyrics", miniMaxMusicLyrics(parsed))
+	if lyrics = strings.TrimSpace(lyrics); lyrics != "" {
+		body, _ = sjson.SetBytes(body, "lyrics", lyrics)
+	}
 	if parsed.IsInstrumental != nil {
 		body, _ = sjson.SetBytes(body, "is_instrumental", *parsed.IsInstrumental)
 	}
 	return body, format, nil
 }
 
-func miniMaxMusicLyrics(parsed *OpenAIMusicGenerationRequest) string {
-	if parsed == nil {
-		return ""
+func buildMiniMaxLyricsBody(prompt string) []byte {
+	body := []byte(`{"mode":"write_full_song","prompt":""}`)
+	body, _ = sjson.SetBytes(body, "prompt", strings.TrimSpace(prompt))
+	return body
+}
+
+func extractMiniMaxLyrics(body []byte) (string, error) {
+	if baseRespErr := miniMaxBaseRespError(body); baseRespErr != "" {
+		return "", errors.New(baseRespErr)
 	}
-	if lyrics := strings.TrimSpace(parsed.Lyrics); lyrics != "" {
-		return lyrics
+	if lyrics := strings.TrimSpace(gjson.GetBytes(body, "lyrics").String()); lyrics != "" {
+		return lyrics, nil
 	}
-	prompt := strings.TrimSpace(parsed.Prompt)
-	if prompt == "" {
-		prompt = "a short uplifting melody"
-	}
-	return prompt + "\n" + prompt
+	return "", fmt.Errorf("MiniMax lyrics_generation did not return lyrics; body_preview=%s", miniMaxVideoResponsePreview(body))
 }
 
 func normalizeAudioFormat(value string, fallback string) string {
@@ -343,7 +359,15 @@ func (s *OpenAIGatewayService) ForwardMusic(ctx context.Context, c *gin.Context,
 	if !isMiniMaxMediaProvider(account) || !isMiniMaxMusicModel(upstreamModel) {
 		return nil, fmt.Errorf("unsupported music upstream model %q", upstreamModel)
 	}
-	forwardBody, format, err := buildMiniMaxMusicBody(parsed, upstreamModel)
+	lyrics := strings.TrimSpace(parsed.Lyrics)
+	if lyrics == "" {
+		generatedLyrics, err := s.generateMiniMaxLyrics(ctx, c, account, parsed.Prompt)
+		if err != nil {
+			return nil, err
+		}
+		lyrics = generatedLyrics
+	}
+	forwardBody, format, err := buildMiniMaxMusicBodyWithLyrics(parsed, upstreamModel, lyrics)
 	if err != nil {
 		return nil, err
 	}
@@ -358,6 +382,56 @@ func (s *OpenAIGatewayService) ForwardMusic(ctx context.Context, c *gin.Context,
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), headers, s.responseHeaderFilter)
 	c.Data(http.StatusOK, "application/json; charset=utf-8", responseBody)
 	return &OpenAIForwardResult{Model: requestModel, UpstreamModel: upstreamModel, ResponseHeaders: headers.Clone()}, nil
+}
+
+func (s *OpenAIGatewayService) generateMiniMaxLyrics(ctx context.Context, c *gin.Context, account *Account, prompt string) (string, error) {
+	if account == nil || account.Type != AccountTypeAPIKey {
+		return "", fmt.Errorf("lyrics generation currently supports API key accounts only")
+	}
+	token := miniMaxMediaAPIKey(account)
+	if token == "" {
+		return "", fmt.Errorf("api_key not found in credentials")
+	}
+	baseURL := miniMaxMediaBaseURL(account)
+	validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+	if err != nil {
+		return "", err
+	}
+	targetURL := buildMiniMaxLyricsURL(validatedURL)
+	if targetBase := absoluteURLBase(targetURL); targetBase != "" {
+		if _, err := s.validateUpstreamBaseURL(targetBase); err != nil {
+			return "", err
+		}
+	}
+	body := buildMiniMaxLyricsBody(prompt)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	if ua := miniMaxMediaUserAgent(account); ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+	if err != nil {
+		return "", fmt.Errorf("MiniMax lyrics_generation request failed: %s", sanitizeUpstreamErrorMessage(err.Error()))
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode >= 400 {
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		_, handleErr := s.handleErrorResponse(ctx, resp, c, account, body)
+		return "", handleErr
+	}
+	return extractMiniMaxLyrics(respBody)
 }
 
 func (s *OpenAIGatewayService) forwardMiniMaxAudio(

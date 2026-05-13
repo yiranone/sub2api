@@ -239,6 +239,9 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 			if testPrompt == "" {
 				testPrompt = defaultOpenAIMusicTestPrompt
 			}
+			if isMiniMaxLyricsModel(testModelID) {
+				return s.testOpenAILyricsAPIKey(c, ctx, account, modelID, testModelID, testPrompt)
+			}
 			return s.testOpenAIMusicAPIKey(c, ctx, account, modelID, testModelID, testPrompt)
 		}
 		if isOpenAIImageModel(modelID) || isOpenAIImageModel(testModelID) || isMiniMaxImageGenerationModel(testModelID) {
@@ -346,7 +349,7 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		errMsg := fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body))
+		errMsg := fmt.Sprintf("API returned %d from %s: %s", resp.StatusCode, apiURL, string(body))
 
 		// 403 表示账号被上游封禁，标记为 error 状态
 		if resp.StatusCode == http.StatusForbidden {
@@ -572,6 +575,9 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		musicPrompt := strings.TrimSpace(prompt)
 		if musicPrompt == "" {
 			musicPrompt = defaultOpenAIMusicTestPrompt
+		}
+		if isMiniMaxLyricsModel(testModelID) {
+			return s.testOpenAILyricsAPIKey(c, ctx, account, requestedTestModelID, testModelID, musicPrompt)
 		}
 		return s.testOpenAIMusicAPIKey(c, ctx, account, requestedTestModelID, testModelID, musicPrompt)
 	}
@@ -1739,7 +1745,13 @@ func (s *AccountTestService) testOpenAIMusicAPIKey(c *gin.Context, ctx context.C
 	}
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: modelID})
 	parsed := &OpenAIMusicGenerationRequest{Model: requestedModelID, Prompt: prompt, OutputFormat: "mp3"}
-	payloadBytes, format, buildErr := buildMiniMaxMusicBody(parsed, modelID)
+	s.sendEvent(c, TestEvent{Type: "content", Text: "Generating MiniMax lyrics...\n"})
+	lyrics, lyricsErr := s.runMiniMaxLyricsRequest(ctx, account, authToken, buildMiniMaxLyricsURL(baseURL), buildMiniMaxLyricsBody(prompt))
+	if lyricsErr != nil {
+		return s.sendErrorAndEnd(c, lyricsErr.Error())
+	}
+	s.sendEvent(c, TestEvent{Type: "content", Text: "Generated lyrics:\n" + lyrics + "\n"})
+	payloadBytes, format, buildErr := buildMiniMaxMusicBodyWithLyrics(parsed, modelID, lyrics)
 	if buildErr != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to build music request: %s", buildErr.Error()))
 	}
@@ -1751,6 +1763,63 @@ func (s *AccountTestService) testOpenAIMusicAPIKey(c *gin.Context, ctx context.C
 	s.sendEvent(c, TestEvent{Type: "audio", AudioURL: audioResultDataURL(result), MimeType: result.MimeType, DurationMs: result.DurationMs})
 	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
 	return nil
+}
+
+func isMiniMaxLyricsModel(model string) bool {
+	return strings.EqualFold(strings.TrimSpace(model), "write_full_song")
+}
+
+func (s *AccountTestService) testOpenAILyricsAPIKey(c *gin.Context, ctx context.Context, account *Account, requestedModelID string, modelID string, prompt string) error {
+	if account.Type != AccountTypeAPIKey {
+		return s.sendErrorAndEnd(c, "Lyrics test currently supports API key accounts only")
+	}
+	if !isMiniMaxMediaProvider(account) || !isMiniMaxLyricsModel(modelID) {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Unsupported lyrics model mapping: %s -> %s", requestedModelID, modelID))
+	}
+	baseURL, authToken, err := s.openAIMediaTestBase(c, account)
+	if err != nil {
+		return err
+	}
+	s.sendEvent(c, TestEvent{Type: "test_start", Model: modelID})
+	s.sendEvent(c, TestEvent{Type: "content", Text: "Generating MiniMax lyrics...\n"})
+	lyrics, lyricsErr := s.runMiniMaxLyricsRequest(ctx, account, authToken, buildMiniMaxLyricsURL(baseURL), buildMiniMaxLyricsBody(prompt))
+	if lyricsErr != nil {
+		return s.sendErrorAndEnd(c, lyricsErr.Error())
+	}
+	s.sendEvent(c, TestEvent{Type: "content", Text: lyrics})
+	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+	return nil
+}
+
+func (s *AccountTestService) runMiniMaxLyricsRequest(ctx context.Context, account *Account, authToken string, targetURL string, payloadBytes []byte) (string, error) {
+	if targetBase := absoluteURLBase(targetURL); targetBase != "" {
+		if _, err := s.validateUpstreamBaseURL(targetBase); err != nil {
+			return "", fmt.Errorf("Invalid target URL: %s", err.Error())
+		}
+	}
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(payloadBytes))
+	if err != nil {
+		return "", fmt.Errorf("Failed to create request")
+	}
+	req.Header.Set("Authorization", "Bearer "+authToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	if err != nil {
+		return "", fmt.Errorf("Lyrics request failed for %s: %s", targetURL, err.Error())
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("Failed to read lyrics response from %s: %s", targetURL, err.Error())
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("Lyrics API returned %d from %s: %s", resp.StatusCode, targetURL, string(respBody))
+	}
+	return extractMiniMaxLyrics(respBody)
 }
 
 func (s *AccountTestService) openAIMediaTestBase(c *gin.Context, account *Account) (string, string, error) {
@@ -1842,6 +1911,9 @@ func (s *AccountTestService) downloadMiniMaxAudioPreview(ctx context.Context, ac
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
 		return nil, err
+	}
+	if resp == nil || resp.Body == nil {
+		return nil, fmt.Errorf("download audio preview returned empty response")
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

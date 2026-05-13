@@ -104,16 +104,22 @@ func TestGetAnthropicBaseURLForModel(t *testing.T) {
 	if got := account.GetAnthropicBaseURLForModel("claude-3-5-sonnet-latest"); got != "https://api.minimaxi.com/anthropic" {
 		t.Errorf("GetAnthropicBaseURLForModel(claude) = %q", got)
 	}
-	if got := account.GetAnthropicBaseURLForModel("MiniMax-M1"); got != "https://api.minimaxi.com" {
-		t.Errorf("GetAnthropicBaseURLForModel(MiniMax) = %q", got)
+	if got := account.GetAnthropicBaseURLForModel("MiniMax-M2.7"); got != "https://api.minimaxi.com/anthropic" {
+		t.Errorf("GetAnthropicBaseURLForModel(MiniMax-M2.7) = %q", got)
+	}
+	if got := account.GetAnthropicBaseURLForModel("music-2.6"); got != "https://api.minimaxi.com" {
+		t.Errorf("GetAnthropicBaseURLForModel(music-2.6) = %q", got)
 	}
 
 	account.Credentials["base_url"] = "https://api.minimaxi.com/anthropic"
 	if got := account.GetAnthropicBaseURLForModel("claude-3-5-sonnet-latest"); got != "https://api.minimaxi.com/anthropic" {
 		t.Errorf("GetAnthropicBaseURLForModel(claude explicit anthropic) = %q", got)
 	}
-	if got := account.GetAnthropicBaseURLForModel("MiniMax-M1"); got != "https://api.minimaxi.com" {
-		t.Errorf("GetAnthropicBaseURLForModel(MiniMax explicit anthropic) = %q", got)
+	if got := account.GetAnthropicBaseURLForModel("MiniMax-M2.7"); got != "https://api.minimaxi.com/anthropic" {
+		t.Errorf("GetAnthropicBaseURLForModel(MiniMax-M2.7 explicit anthropic) = %q", got)
+	}
+	if got := account.GetAnthropicBaseURLForModel("music-2.6"); got != "https://api.minimaxi.com" {
+		t.Errorf("GetAnthropicBaseURLForModel(music-2.6 explicit anthropic) = %q", got)
 	}
 }
 

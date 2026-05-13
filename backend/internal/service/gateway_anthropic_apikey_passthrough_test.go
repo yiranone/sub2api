@@ -283,9 +283,9 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_MiniMaxBaseURL(t *testing.T) 
 		Extra: map[string]any{"anthropic_passthrough": true},
 	}
 
-	req, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"MiniMax-M1"}`), "upstream-minimax-key", "MiniMax-M1")
+	req, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"MiniMax-M2.7"}`), "upstream-minimax-key", "MiniMax-M2.7")
 	require.NoError(t, err)
-	require.Equal(t, "https://api.minimaxi.com/v1/messages?beta=true", req.URL.String())
+	require.Equal(t, "https://api.minimaxi.com/anthropic/v1/messages?beta=true", req.URL.String())
 	require.Equal(t, "upstream-minimax-key", getHeaderRaw(req.Header, "x-api-key"))
 
 	req, err = svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"claude-3-5-sonnet-latest"}`), "upstream-minimax-key", "claude-3-5-sonnet-latest")
@@ -310,9 +310,9 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_MiniMaxCountTokensBaseURL(t *
 		Extra: map[string]any{"anthropic_passthrough": true},
 	}
 
-	req, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"MiniMax-M1"}`), "upstream-minimax-key", "MiniMax-M1")
+	req, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"MiniMax-M2.7"}`), "upstream-minimax-key", "MiniMax-M2.7")
 	require.NoError(t, err)
-	require.Equal(t, "https://api.minimaxi.com/v1/messages/count_tokens?beta=true", req.URL.String())
+	require.Equal(t, "https://api.minimaxi.com/anthropic/v1/messages/count_tokens?beta=true", req.URL.String())
 
 	req, err = svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"claude-3-5-sonnet-latest"}`), "upstream-minimax-key", "claude-3-5-sonnet-latest")
 	require.NoError(t, err)

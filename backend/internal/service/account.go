@@ -758,12 +758,18 @@ func normalizeAnthropicBaseURL(baseURL string, model string) string {
 		if strings.HasSuffix(lower, "/anthropic") {
 			root = strings.TrimRight(normalized[:len(normalized)-len("/anthropic")], "/")
 		}
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "claude-") {
+		if isMiniMaxAnthropicCompatibleTextModel(model) {
 			return root + "/anthropic"
 		}
 		return root
 	}
 	return baseURL
+}
+
+func isMiniMaxAnthropicCompatibleTextModel(model string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(normalized, "claude-") ||
+		strings.HasPrefix(normalized, "minimax-m")
 }
 
 // GetGeminiBaseURL 返回 Gemini 兼容端点的 base URL。

@@ -103,3 +103,36 @@ func TestAccountHandlerGetAvailableModels_OpenAIOAuthPassthroughFallsBackToDefau
 	require.NotEmpty(t, resp.Data)
 	require.NotEqual(t, "gpt-5", resp.Data[0].ID)
 }
+
+func TestAccountHandlerGetAvailableModels_AnthropicDefaultsIncludeMiniMaxM27(t *testing.T) {
+	svc := &availableModelsAdminService{
+		stubAdminService: newStubAdminService(),
+		account: service.Account{
+			ID:          44,
+			Name:        "minimax-anthropic",
+			Platform:    service.PlatformAnthropic,
+			Type:        service.AccountTypeAPIKey,
+			Status:      service.StatusActive,
+			Credentials: map[string]any{"api_key": "test-api-key", "base_url": "https://api.minimaxi.com"},
+		},
+	}
+	router := setupAvailableModelsRouter(svc)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/44/models", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp struct {
+		Data []struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Contains(t, resp.Data, struct {
+		ID          string `json:"id"`
+		DisplayName string `json:"display_name"`
+	}{ID: "MiniMax-M2.7", DisplayName: "MiniMax M2.7"})
+}

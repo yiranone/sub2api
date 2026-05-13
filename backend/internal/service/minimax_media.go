@@ -105,6 +105,8 @@ func normalizeMiniMaxEndpointBase(base string, fallback string) string {
 		"/t2a_v2",
 		"/v1/music_generation",
 		"/music_generation",
+		"/v1/lyrics_generation",
+		"/lyrics_generation",
 	} {
 		if idx := strings.Index(lower, marker); idx >= 0 {
 			normalized = strings.TrimRight(normalized[:idx], "/")
