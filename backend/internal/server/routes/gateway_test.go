@@ -83,7 +83,9 @@ func TestGatewayRoutesOpenAIVideosPathsAreRegistered(t *testing.T) {
 
 	for _, path := range []string{
 		"/v1/videos/generations",
+		"/v1/video/generations",
 		"/videos/generations",
+		"/video/generations",
 	} {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"gpt-video-1","prompt":"make a short video"}`))
 		req.Header.Set("Content-Type", "application/json")
@@ -105,6 +107,8 @@ func TestGatewayRoutesOpenAIAudioMusicPathsAreRegistered(t *testing.T) {
 		{"/audio/speech", `{"model":"gpt-4o-mini-tts","input":"hello"}`},
 		{"/v1/music/generations", `{"model":"gpt-music-1","prompt":"short piano theme"}`},
 		{"/music/generations", `{"model":"gpt-music-1","prompt":"short piano theme"}`},
+		{"/v1/lyrics/generations", `{"model":"write_full_song","prompt":"write lyrics about rain"}`},
+		{"/lyrics/generations", `{"model":"write_full_song","prompt":"write lyrics about rain"}`},
 	}
 	for _, tc := range cases {
 		req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))

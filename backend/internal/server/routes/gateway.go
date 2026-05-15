@@ -101,11 +101,17 @@ func RegisterGatewayRoutes(
 		gateway.POST("/videos/generations", func(c *gin.Context) {
 			routeMediaVideos(c, h)
 		})
+		gateway.POST("/video/generations", func(c *gin.Context) {
+			routeMediaVideos(c, h)
+		})
 		gateway.POST("/audio/speech", func(c *gin.Context) {
 			routeMediaAudioSpeech(c, h)
 		})
 		gateway.POST("/music/generations", func(c *gin.Context) {
 			routeMediaMusic(c, h)
+		})
+		gateway.POST("/lyrics/generations", func(c *gin.Context) {
+			routeMediaLyrics(c, h)
 		})
 	}
 
@@ -159,11 +165,17 @@ func RegisterGatewayRoutes(
 	r.POST("/videos/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
 		routeMediaVideos(c, h)
 	})
+	r.POST("/video/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
+		routeMediaVideos(c, h)
+	})
 	r.POST("/audio/speech", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
 		routeMediaAudioSpeech(c, h)
 	})
 	r.POST("/music/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
 		routeMediaMusic(c, h)
+	})
+	r.POST("/lyrics/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
+		routeMediaLyrics(c, h)
 	})
 
 	// Antigravity 模型列表
@@ -224,6 +236,10 @@ func routeMediaAudioSpeech(c *gin.Context, h *handler.Handlers) {
 
 func routeMediaMusic(c *gin.Context, h *handler.Handlers) {
 	routeMedia(c, "Music", func() { h.OpenAIGateway.Music(c) }, func() { h.Gateway.Music(c) })
+}
+
+func routeMediaLyrics(c *gin.Context, h *handler.Handlers) {
+	routeMedia(c, "Lyrics", func() { h.OpenAIGateway.Lyrics(c) }, func() { h.Gateway.Lyrics(c) })
 }
 
 func routeMedia(c *gin.Context, apiName string, openAIHandler func(), claudeHandler func()) {

@@ -164,6 +164,51 @@ func TestOpenAIGatewayServiceForwardMusic_UsesExplicitLyrics(t *testing.T) {
 	require.Equal(t, "line one\nline two", gjson.GetBytes(upstream.bodies[0], "lyrics").String())
 }
 
+func TestOpenAIGatewayServiceForwardLyrics_APIKeyMiniMaxMappedModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"write_full_song","prompt":"write lyrics about rain"}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/lyrics/generations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	parsed, err := svc.ParseOpenAILyricsGenerationRequest(c, body)
+	require.NoError(t, err)
+	upstream := &httpUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"lyrics":"line one\nline two","base_resp":{"status_code":0,"status_msg":"success"}}`)),
+		},
+	}
+	svc.httpUpstream = upstream
+	account := &Account{
+		ID:          13,
+		Name:        "minimax-lyrics",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":       "test-api-key",
+			"base_url":      "https://api.minimaxi.com",
+			"model_mapping": map[string]any{"write_full_song": "write_full_song"},
+		},
+	}
+
+	result, err := svc.ForwardLyrics(context.Background(), c, account, parsed, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "write_full_song", result.UpstreamModel)
+	require.Equal(t, "https://api.minimaxi.com/v1/lyrics_generation", upstream.lastReq.URL.String())
+	require.Equal(t, "write_full_song", gjson.GetBytes(upstream.lastBody, "mode").String())
+	require.Equal(t, "write lyrics about rain", gjson.GetBytes(upstream.lastBody, "prompt").String())
+	require.Equal(t, "line one\nline two", gjson.GetBytes(rec.Body.Bytes(), "lyrics").String())
+	require.Equal(t, "write_full_song", gjson.GetBytes(rec.Body.Bytes(), "model").String())
+}
+
 func TestBuildMiniMaxMusicURLNormalizesConfiguredEndpoint(t *testing.T) {
 	require.Equal(t, "https://api.minimaxi.com/v1/music_generation", buildMiniMaxMusicURL("https://api.minimaxi.com"))
 	require.Equal(t, "https://api.minimaxi.com/v1/music_generation", buildMiniMaxMusicURL("https://api.minimaxi.com/anthropic"))

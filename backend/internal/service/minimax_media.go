@@ -198,6 +198,14 @@ func (s *GatewayService) ParseOpenAIMusicGenerationRequest(c *gin.Context, body 
 	return adapter.ParseOpenAIMusicGenerationRequest(c, body)
 }
 
+func (s *GatewayService) ParseOpenAILyricsGenerationRequest(c *gin.Context, body []byte) (*OpenAILyricsGenerationRequest, error) {
+	adapter := s.openAIMediaAdapter()
+	if adapter == nil {
+		return nil, fmt.Errorf("gateway service is not available")
+	}
+	return adapter.ParseOpenAILyricsGenerationRequest(c, body)
+}
+
 func (s *GatewayService) ForwardImages(
 	ctx context.Context,
 	c *gin.Context,
@@ -257,5 +265,20 @@ func (s *GatewayService) ForwardMusic(
 		return nil, fmt.Errorf("gateway service is not available")
 	}
 	result, err := adapter.ForwardMusic(ctx, c, account, parsed, channelMappedModel)
+	return openAIForwardResultToGatewayResult(result), err
+}
+
+func (s *GatewayService) ForwardLyrics(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	parsed *OpenAILyricsGenerationRequest,
+	channelMappedModel string,
+) (*ForwardResult, error) {
+	adapter := s.openAIMediaAdapter()
+	if adapter == nil {
+		return nil, fmt.Errorf("gateway service is not available")
+	}
+	result, err := adapter.ForwardLyrics(ctx, c, account, parsed, channelMappedModel)
 	return openAIForwardResultToGatewayResult(result), err
 }

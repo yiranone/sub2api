@@ -23,6 +23,7 @@ const (
 	gatewayMediaVideos gatewayMediaKind = "videos"
 	gatewayMediaSpeech gatewayMediaKind = "audio_speech"
 	gatewayMediaMusic  gatewayMediaKind = "music"
+	gatewayMediaLyrics gatewayMediaKind = "lyrics"
 )
 
 func (h *GatewayHandler) Images(c *gin.Context) {
@@ -39,6 +40,10 @@ func (h *GatewayHandler) AudioSpeech(c *gin.Context) {
 
 func (h *GatewayHandler) Music(c *gin.Context) {
 	h.handleMedia(c, gatewayMediaMusic)
+}
+
+func (h *GatewayHandler) Lyrics(c *gin.Context) {
+	h.handleMedia(c, gatewayMediaLyrics)
 }
 
 func (h *GatewayHandler) handleMedia(c *gin.Context, kind gatewayMediaKind) {
@@ -264,6 +269,13 @@ func (h *GatewayHandler) parseMediaRequest(c *gin.Context, kind gatewayMediaKind
 		}
 		c.Set("gateway_media_music_request", parsed)
 		return parsed.Model, false, service.ContentModerationProtocolAnthropicMessages, body, "", nil
+	case gatewayMediaLyrics:
+		parsed, err := h.gatewayService.ParseOpenAILyricsGenerationRequest(c, body)
+		if err != nil {
+			return "", false, "", nil, "", err
+		}
+		c.Set("gateway_media_lyrics_request", parsed)
+		return parsed.Model, false, service.ContentModerationProtocolAnthropicMessages, body, "", nil
 	default:
 		return "", false, "", nil, "", errors.New("unsupported media endpoint")
 	}
@@ -283,6 +295,9 @@ func (h *GatewayHandler) forwardMedia(c *gin.Context, kind gatewayMediaKind, acc
 	case gatewayMediaMusic:
 		parsed, _ := c.Get("gateway_media_music_request")
 		return h.gatewayService.ForwardMusic(c.Request.Context(), c, account, parsed.(*service.OpenAIMusicGenerationRequest), channelMappedModel)
+	case gatewayMediaLyrics:
+		parsed, _ := c.Get("gateway_media_lyrics_request")
+		return h.gatewayService.ForwardLyrics(c.Request.Context(), c, account, parsed.(*service.OpenAILyricsGenerationRequest), channelMappedModel)
 	default:
 		return nil, errors.New("unsupported media endpoint")
 	}

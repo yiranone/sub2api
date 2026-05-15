@@ -14,16 +14,22 @@ import (
 // AudioSpeech handles OpenAI-style speech synthesis requests.
 // POST /v1/audio/speech
 func (h *OpenAIGatewayHandler) AudioSpeech(c *gin.Context) {
-	h.handleAudioMusic(c, "handler.openai_gateway.audio_speech", true)
+	h.handleAudioMusic(c, "handler.openai_gateway.audio_speech", "speech")
 }
 
 // Music handles OpenAI-style music generation requests.
 // POST /v1/music/generations
 func (h *OpenAIGatewayHandler) Music(c *gin.Context) {
-	h.handleAudioMusic(c, "handler.openai_gateway.music", false)
+	h.handleAudioMusic(c, "handler.openai_gateway.music", "music")
 }
 
-func (h *OpenAIGatewayHandler) handleAudioMusic(c *gin.Context, component string, speech bool) {
+// Lyrics handles OpenAI-style lyrics generation requests.
+// POST /v1/lyrics/generations
+func (h *OpenAIGatewayHandler) Lyrics(c *gin.Context) {
+	h.handleAudioMusic(c, "handler.openai_gateway.lyrics", "lyrics")
+}
+
+func (h *OpenAIGatewayHandler) handleAudioMusic(c *gin.Context, component string, kind string) {
 	streamStarted := false
 	defer h.recoverResponsesPanic(c, &streamStarted)
 
@@ -63,7 +69,7 @@ func (h *OpenAIGatewayHandler) handleAudioMusic(c *gin.Context, component string
 	var channelMapping service.ChannelMappingResult
 
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
-	if speech {
+	if kind == "speech" {
 		parsed, parseErr := h.gatewayService.ParseOpenAIAudioSpeechRequest(c, body)
 		if parseErr != nil {
 			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", parseErr.Error())
@@ -83,6 +89,29 @@ func (h *OpenAIGatewayHandler) handleAudioMusic(c *gin.Context, component string
 			upstreamModel = result.UpstreamModel
 		}
 		h.finishSimpleOpenAIForward(c, reqLog, apiKey, account, result, forwardErr, channelMapping, parsed.Model, upstreamModel, body, component, &streamStarted)
+		return
+	}
+
+	if kind == "lyrics" {
+		parsed, parseErr := h.gatewayService.ParseOpenAILyricsGenerationRequest(c, body)
+		if parseErr != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", parseErr.Error())
+			return
+		}
+		model = parsed.Model
+		channelMapping, _ = h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, parsed.Model)
+		_ = subject
+		account, selected := h.selectSimpleOpenAIAccount(c, reqLog, apiKey, parsed.Model, &streamStarted)
+		if !selected {
+			return
+		}
+		forwardStart := time.Now()
+		result, forwardErr = h.gatewayService.ForwardLyrics(c.Request.Context(), c, account, parsed, channelMapping.MappedModel)
+		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, time.Since(forwardStart).Milliseconds())
+		if result != nil {
+			upstreamModel = result.UpstreamModel
+		}
+		h.finishSimpleOpenAIForward(c, reqLog, apiKey, account, result, forwardErr, channelMapping, model, upstreamModel, body, component, &streamStarted)
 		return
 	}
 

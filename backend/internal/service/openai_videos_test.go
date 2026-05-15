@@ -151,3 +151,20 @@ func TestParseOpenAIVideosRequestRejectsNonVideoModel(t *testing.T) {
 	require.Nil(t, parsed)
 	require.ErrorContains(t, err, `videos endpoint requires a video model`)
 }
+
+func TestParseOpenAIVideosRequestAcceptsSingularVideoPath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-video-1","prompt":"make a short video"}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/video/generations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+
+	svc := &OpenAIGatewayService{}
+	parsed, err := svc.ParseOpenAIVideosRequest(c, body)
+	require.NoError(t, err)
+	require.NotNil(t, parsed)
+	require.Equal(t, "gpt-video-1", parsed.Model)
+}

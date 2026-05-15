@@ -56,7 +56,8 @@ func (s *OpenAIGatewayService) ParseOpenAIVideosRequest(c *gin.Context, body []b
 	if c == nil || c.Request == nil {
 		return nil, fmt.Errorf("missing request context")
 	}
-	if strings.TrimSpace(c.Request.URL.Path) != "" && !strings.Contains(c.Request.URL.Path, "/videos/generations") {
+	path := strings.TrimSpace(c.Request.URL.Path)
+	if path != "" && !strings.Contains(path, "/videos/generations") && !strings.Contains(path, "/video/generations") {
 		return nil, fmt.Errorf("unsupported videos endpoint")
 	}
 	if len(body) == 0 {

@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	openAIAudioSpeechEndpoint      = "/v1/audio/speech"
-	openAIMusicGenerationsEndpoint = "/v1/music/generations"
+	openAIAudioSpeechEndpoint       = "/v1/audio/speech"
+	openAIMusicGenerationsEndpoint  = "/v1/music/generations"
+	openAILyricsGenerationsEndpoint = "/v1/lyrics/generations"
 
 	miniMaxSpeechURL             = "https://api.minimaxi.com/v1/t2a_v2"
 	miniMaxMusicURL              = "https://api.minimaxi.com/v1/music_generation"
@@ -44,6 +45,12 @@ type OpenAIMusicGenerationRequest struct {
 	OutputFormat   string
 	IsInstrumental *bool
 	Body           []byte
+}
+
+type OpenAILyricsGenerationRequest struct {
+	Model  string
+	Prompt string
+	Body   []byte
 }
 
 type openAIAudioResult struct {
@@ -149,6 +156,33 @@ func (s *OpenAIGatewayService) ParseOpenAIMusicGenerationRequest(c *gin.Context,
 		}
 		v := instrumental.Bool()
 		req.IsInstrumental = &v
+	}
+	return req, nil
+}
+
+func (s *OpenAIGatewayService) ParseOpenAILyricsGenerationRequest(c *gin.Context, body []byte) (*OpenAILyricsGenerationRequest, error) {
+	if c == nil || c.Request == nil {
+		return nil, fmt.Errorf("missing request context")
+	}
+	if !strings.Contains(c.Request.URL.Path, "/lyrics/generations") {
+		return nil, fmt.Errorf("unsupported lyrics endpoint")
+	}
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return nil, fmt.Errorf("failed to parse request body")
+	}
+	req := &OpenAILyricsGenerationRequest{
+		Model:  strings.TrimSpace(gjson.GetBytes(body, "model").String()),
+		Prompt: strings.TrimSpace(gjson.GetBytes(body, "prompt").String()),
+		Body:   body,
+	}
+	if req.Model == "" {
+		return nil, fmt.Errorf("model is required")
+	}
+	if !isOpenAIMusicModel(req.Model) {
+		return nil, fmt.Errorf("lyrics endpoint requires a lyrics model, got %q", req.Model)
+	}
+	if req.Prompt == "" {
+		return nil, fmt.Errorf("prompt is required")
 	}
 	return req, nil
 }
@@ -308,6 +342,19 @@ func buildOpenAIMusicResponse(result openAIAudioResult, createdAt int64) ([]byte
 	return out, nil
 }
 
+func buildOpenAILyricsResponse(lyrics string, model string, createdAt int64) ([]byte, error) {
+	if createdAt <= 0 {
+		createdAt = time.Now().Unix()
+	}
+	out := []byte(`{"created":0,"lyrics":""}`)
+	out, _ = sjson.SetBytes(out, "created", createdAt)
+	out, _ = sjson.SetBytes(out, "lyrics", strings.TrimSpace(lyrics))
+	if model = strings.TrimSpace(model); model != "" {
+		out, _ = sjson.SetBytes(out, "model", model)
+	}
+	return out, nil
+}
+
 func (s *OpenAIGatewayService) ForwardAudioSpeech(ctx context.Context, c *gin.Context, account *Account, parsed *OpenAIAudioSpeechRequest, channelMappedModel string) (*OpenAIForwardResult, error) {
 	if parsed == nil {
 		return nil, fmt.Errorf("parsed speech request is required")
@@ -382,6 +429,30 @@ func (s *OpenAIGatewayService) ForwardMusic(ctx context.Context, c *gin.Context,
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), headers, s.responseHeaderFilter)
 	c.Data(http.StatusOK, "application/json; charset=utf-8", responseBody)
 	return &OpenAIForwardResult{Model: requestModel, UpstreamModel: upstreamModel, ResponseHeaders: headers.Clone()}, nil
+}
+
+func (s *OpenAIGatewayService) ForwardLyrics(ctx context.Context, c *gin.Context, account *Account, parsed *OpenAILyricsGenerationRequest, channelMappedModel string) (*OpenAIForwardResult, error) {
+	if parsed == nil {
+		return nil, fmt.Errorf("parsed lyrics request is required")
+	}
+	requestModel := strings.TrimSpace(parsed.Model)
+	if mapped := strings.TrimSpace(channelMappedModel); mapped != "" {
+		requestModel = mapped
+	}
+	upstreamModel := account.GetMappedModel(requestModel)
+	if !isMiniMaxMediaProvider(account) || !isMiniMaxLyricsModel(upstreamModel) {
+		return nil, fmt.Errorf("unsupported lyrics upstream model %q", upstreamModel)
+	}
+	lyrics, err := s.generateMiniMaxLyrics(ctx, c, account, parsed.Prompt)
+	if err != nil {
+		return nil, err
+	}
+	responseBody, err := buildOpenAILyricsResponse(lyrics, upstreamModel, time.Now().Unix())
+	if err != nil {
+		return nil, err
+	}
+	c.Data(http.StatusOK, "application/json; charset=utf-8", responseBody)
+	return &OpenAIForwardResult{Model: requestModel, UpstreamModel: upstreamModel}, nil
 }
 
 func (s *OpenAIGatewayService) generateMiniMaxLyrics(ctx context.Context, c *gin.Context, account *Account, prompt string) (string, error) {
