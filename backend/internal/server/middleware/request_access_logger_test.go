@@ -201,6 +201,64 @@ func TestLogger_HealthPathSkipped(t *testing.T) {
 	}
 }
 
+func TestLogger_AuthMeSuccessAccessLogUsesDebug(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	sink := initMiddlewareTestLogger(t)
+
+	r := gin.New()
+	r.Use(Logger())
+	r.GET("/api/v1/auth/me", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+
+	for _, event := range sink.list() {
+		if event == nil || event.Message != "http request completed" {
+			continue
+		}
+		if event.Level != "debug" {
+			t.Fatalf("auth/me success access log level=%q, want debug", event.Level)
+		}
+		return
+	}
+	t.Fatalf("access log event not found")
+}
+
+func TestLogger_AuthMeErrorAccessLogStaysInfo(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	sink := initMiddlewareTestLogger(t)
+
+	r := gin.New()
+	r.Use(Logger())
+	r.GET("/api/v1/auth/me", func(c *gin.Context) {
+		c.Status(http.StatusUnauthorized)
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d", w.Code)
+	}
+
+	for _, event := range sink.list() {
+		if event == nil || event.Message != "http request completed" {
+			continue
+		}
+		if event.Level != "info" {
+			t.Fatalf("auth/me error access log level=%q, want info", event.Level)
+		}
+		return
+	}
+	t.Fatalf("access log event not found")
+}
+
 func TestLogger_AccessLogDroppedWhenLevelWarn(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	sink := initMiddlewareTestLoggerWithLevel(t, "warn")

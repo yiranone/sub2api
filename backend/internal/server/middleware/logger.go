@@ -57,10 +57,21 @@ func Logger() gin.HandlerFunc {
 		}
 
 		l := logger.FromContext(c.Request.Context()).With(fields...)
-		l.Info("http request completed", zap.Time("completed_at", endTime))
+		if shouldDebugAccessLog(path, statusCode) {
+			l.Debug("http request completed", zap.Time("completed_at", endTime))
+		} else {
+			l.Info("http request completed", zap.Time("completed_at", endTime))
+		}
 
 		if len(c.Errors) > 0 {
 			l.Warn("http request contains gin errors", zap.String("errors", c.Errors.String()))
 		}
 	}
+}
+
+func shouldDebugAccessLog(path string, statusCode int) bool {
+	if path != "/api/v1/auth/me" {
+		return false
+	}
+	return statusCode >= 200 && statusCode < 400
 }
