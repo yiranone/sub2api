@@ -517,7 +517,6 @@ func (s *OpenAIGatewayService) forwardMiniMaxAudio(
 	if account == nil || account.Type != AccountTypeAPIKey {
 		return openAIAudioResult{}, nil, fmt.Errorf("audio and music endpoints currently support API key accounts only")
 	}
-	setOpsUpstreamRequestBody(c, body)
 	token := miniMaxMediaAPIKey(account)
 	if token == "" {
 		return openAIAudioResult{}, nil, fmt.Errorf("api_key not found in credentials")

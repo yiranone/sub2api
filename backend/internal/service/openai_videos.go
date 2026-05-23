@@ -310,7 +310,6 @@ func (s *OpenAIGatewayService) ForwardVideos(
 	if err != nil {
 		return nil, err
 	}
-	setOpsUpstreamRequestBody(c, forwardBody)
 	logger.LegacyPrintf("service.openai_gateway", "[OpenAI] MiniMax video request body=%s", miniMaxVideoResponsePreview(forwardBody))
 
 	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, false)

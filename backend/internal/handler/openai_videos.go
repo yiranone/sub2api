@@ -59,7 +59,7 @@ func (h *OpenAIGatewayHandler) Videos(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return
 	}
-	setOpsRequestContext(c, "", false, body)
+	setOpsRequestContext(c, "", false)
 
 	parsed, err := h.gatewayService.ParseOpenAIVideosRequest(c, body)
 	if err != nil {
@@ -67,7 +67,7 @@ func (h *OpenAIGatewayHandler) Videos(c *gin.Context) {
 		return
 	}
 	reqLog = reqLog.With(zap.String("model", parsed.Model))
-	setOpsRequestContext(c, parsed.Model, false, body)
+	setOpsRequestContext(c, parsed.Model, false)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(false, false)))
 
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, parsed.Model)

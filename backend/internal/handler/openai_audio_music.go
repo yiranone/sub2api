@@ -137,7 +137,7 @@ func (h *OpenAIGatewayHandler) handleAudioMusic(c *gin.Context, component string
 }
 
 func (h *OpenAIGatewayHandler) selectSimpleOpenAIAccount(c *gin.Context, reqLog *zap.Logger, apiKey *service.APIKey, model string, streamStarted *bool) (*service.Account, bool) {
-	setOpsRequestContext(c, model, false, nil)
+	setOpsRequestContext(c, model, false)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(false, false)))
 	selection, _, err := h.gatewayService.SelectAccountWithScheduler(
 		c.Request.Context(),

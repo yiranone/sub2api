@@ -102,7 +102,7 @@ func (h *GatewayHandler) handleMedia(c *gin.Context, kind gatewayMediaKind) {
 		return
 	}
 
-	setOpsRequestContext(c, reqModel, reqStream, body)
+	setOpsRequestContext(c, reqModel, reqStream)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(reqStream, false)))
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
 	if h.errorPassthroughService != nil {
