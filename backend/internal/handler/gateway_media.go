@@ -122,7 +122,8 @@ func (h *GatewayHandler) handleMedia(c *gin.Context, kind gatewayMediaKind) {
 		defer userReleaseFunc()
 	}
 
-	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription); err != nil {
+	quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
+	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, quotaPlatform); err != nil {
 		reqLog.Info("gateway.media.billing_eligibility_check_failed", zap.Error(err))
 		status, code, message, retryAfter := billingErrorDetails(err)
 		if retryAfter > 0 {
@@ -210,9 +211,10 @@ func (h *GatewayHandler) handleMedia(c *gin.Context, kind gatewayMediaKind) {
 				result.ImageSize = imageSize
 			}
 		}
-		h.submitUsageRecordTask(func(ctx context.Context) {
+		h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
 				Result:             result,
+				QuotaPlatform:      quotaPlatform,
 				APIKey:             apiKey,
 				User:               apiKey.User,
 				Account:            account,
