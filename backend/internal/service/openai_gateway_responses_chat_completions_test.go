@@ -116,11 +116,11 @@ func TestForwardResponsesAsRawChatCompletions_AppliesModelMappingForMiniMax(t *t
 		},
 	}
 
-	result, err := svc.forwardResponsesAsRawChatCompletions(context.Background(), c, account, body, "gpt-5.5", time.Now())
+	result, err := svc.forwardResponsesViaRawChatCompletions(context.Background(), c, account, body)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, "gpt-5.5", result.Model)
-	require.Equal(t, "gpt-5.5", result.BillingModel)
+	require.Equal(t, "codex-MiniMax-M2.7", result.BillingModel)
 	require.Equal(t, "codex-MiniMax-M2.7", result.UpstreamModel)
 	require.Equal(t, "codex-MiniMax-M2.7", gjson.GetBytes(upstream.lastBody, "model").String())
 	require.Equal(t, "hello", gjson.GetBytes(upstream.lastBody, "messages.0.content").String())
@@ -138,15 +138,12 @@ func TestForwardResponsesAsRawChatCompletions_StreamReturnsResponsesEvents(t *te
 
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"application/json"}},
-		Body: io.NopCloser(strings.NewReader(`{
-			"id":"chatcmpl_minimax_stream_1",
-			"object":"chat.completion",
-			"created":1777550000,
-			"model":"codex-MiniMax-M2.7",
-			"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
-			"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}
-		}`)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(
+			"data: {\"id\":\"chatcmpl_minimax_stream_1\",\"object\":\"chat.completion.chunk\",\"created\":1777550000,\"model\":\"codex-MiniMax-M2.7\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":null}]}\n\n" +
+				"data: {\"id\":\"chatcmpl_minimax_stream_1\",\"object\":\"chat.completion.chunk\",\"created\":1777550000,\"model\":\"codex-MiniMax-M2.7\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n" +
+				"data: [DONE]\n\n",
+		)),
 	}}
 
 	svc := &OpenAIGatewayService{
@@ -171,7 +168,7 @@ func TestForwardResponsesAsRawChatCompletions_StreamReturnsResponsesEvents(t *te
 		},
 	}
 
-	result, err := svc.forwardResponsesAsRawChatCompletions(context.Background(), c, account, body, "gpt-5.5", time.Now())
+	result, err := svc.forwardResponsesViaRawChatCompletions(context.Background(), c, account, body)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.True(t, result.Stream)
