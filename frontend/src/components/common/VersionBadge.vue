@@ -42,6 +42,7 @@
               t('version.currentVersion')
             }}</span>
             <button
+              @click="refreshVersion()"
               class="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-dark-700 dark:hover:text-dark-200"
               :disabled="loading"
               :title="t('version.refresh')"
