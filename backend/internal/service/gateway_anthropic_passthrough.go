@@ -307,7 +307,11 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 			return nil, nil, err
 		}
 		if isMiniMaxMediaProvider(account) {
+			originalURL := validatedURL
 			validatedURL = normalizeMiniMaxEndpointBase(validatedURL, miniMaxDefaultBaseURL) + "/anthropic"
+			logger.LegacyPrintf("service.gateway",
+				"[Anthropic passthrough] MiniMax endpoint normalized: account=%d name=%s base_url=%s upstream_base=%s",
+				account.ID, account.Name, safeUpstreamURL(originalURL), safeUpstreamURL(validatedURL))
 		}
 		targetURL = validatedURL + "/v1/messages?beta=true"
 	}
