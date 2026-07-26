@@ -97,8 +97,8 @@ func (h *GatewayHandler) handleMedia(c *gin.Context, kind gatewayMediaKind) {
 		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
 		return
 	}
-	if decision := h.checkContentModeration(c, reqLog, apiKey, subject, moderationProtocol, reqModel, moderationBody); decision != nil && decision.Blocked {
-		h.errorResponse(c, contentModerationStatus(decision), contentModerationErrorCode(decision), decision.Message)
+	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, moderationProtocol, reqModel, moderationBody); decision != nil && !decision.AllowNextStage {
+		h.anthropicSecurityAuditError(c, decision)
 		return
 	}
 
@@ -179,7 +179,7 @@ func (h *GatewayHandler) handleMedia(c *gin.Context, kind gatewayMediaKind) {
 		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) && c.Writer.Size() == writerSizeBeforeForward {
-				action := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, failoverErr)
+				action := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, account.GetPoolModeRetryCount(), failoverErr)
 				if action == FailoverContinue {
 					continue
 				}
@@ -256,28 +256,28 @@ func (h *GatewayHandler) parseMediaRequest(c *gin.Context, kind gatewayMediaKind
 			return "", false, "", nil, "", err
 		}
 		c.Set("gateway_media_videos_request", parsed)
-		return parsed.Model, false, service.ContentModerationProtocolAnthropicMessages, body, "", nil
+		return parsed.Model, false, "media", body, "", nil
 	case gatewayMediaSpeech:
 		parsed, err := h.gatewayService.ParseOpenAIAudioSpeechRequest(c, body)
 		if err != nil {
 			return "", false, "", nil, "", err
 		}
 		c.Set("gateway_media_speech_request", parsed)
-		return parsed.Model, false, service.ContentModerationProtocolAnthropicMessages, body, "", nil
+		return parsed.Model, false, "media", body, "", nil
 	case gatewayMediaMusic:
 		parsed, err := h.gatewayService.ParseOpenAIMusicGenerationRequest(c, body)
 		if err != nil {
 			return "", false, "", nil, "", err
 		}
 		c.Set("gateway_media_music_request", parsed)
-		return parsed.Model, false, service.ContentModerationProtocolAnthropicMessages, body, "", nil
+		return parsed.Model, false, "media", body, "", nil
 	case gatewayMediaLyrics:
 		parsed, err := h.gatewayService.ParseOpenAILyricsGenerationRequest(c, body)
 		if err != nil {
 			return "", false, "", nil, "", err
 		}
 		c.Set("gateway_media_lyrics_request", parsed)
-		return parsed.Model, false, service.ContentModerationProtocolAnthropicMessages, body, "", nil
+		return parsed.Model, false, "media", body, "", nil
 	default:
 		return "", false, "", nil, "", errors.New("unsupported media endpoint")
 	}

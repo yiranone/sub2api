@@ -67,6 +67,13 @@ func (h *OpenAIGatewayHandler) handleAudioMusic(c *gin.Context, component string
 	var forwardErr error
 	var upstreamModel string
 	var channelMapping service.ChannelMappingResult
+	auditMediaRequest := func(model string) bool {
+		if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, "media", model, body); decision != nil && !decision.AllowNextStage {
+			h.openAISecurityAuditError(c, decision)
+			return false
+		}
+		return true
+	}
 
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 	if kind == "speech" {
@@ -76,6 +83,9 @@ func (h *OpenAIGatewayHandler) handleAudioMusic(c *gin.Context, component string
 			return
 		}
 		model = parsed.Model
+		if !auditMediaRequest(model) {
+			return
+		}
 		channelMapping, _ = h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, parsed.Model)
 		_ = subject
 		account, selected := h.selectSimpleOpenAIAccount(c, reqLog, apiKey, parsed.Model, &streamStarted)
@@ -99,6 +109,9 @@ func (h *OpenAIGatewayHandler) handleAudioMusic(c *gin.Context, component string
 			return
 		}
 		model = parsed.Model
+		if !auditMediaRequest(model) {
+			return
+		}
 		channelMapping, _ = h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, parsed.Model)
 		_ = subject
 		account, selected := h.selectSimpleOpenAIAccount(c, reqLog, apiKey, parsed.Model, &streamStarted)
@@ -121,6 +134,9 @@ func (h *OpenAIGatewayHandler) handleAudioMusic(c *gin.Context, component string
 		return
 	}
 	model = parsed.Model
+	if !auditMediaRequest(model) {
+		return
+	}
 	channelMapping, _ = h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, parsed.Model)
 	_ = subject
 	account, selected := h.selectSimpleOpenAIAccount(c, reqLog, apiKey, parsed.Model, &streamStarted)
@@ -173,7 +189,7 @@ func (h *OpenAIGatewayHandler) finishSimpleOpenAIForward(
 	streamStarted *bool,
 ) {
 	if err != nil {
-		h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+		h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(requestModel), false, nil)
 		wroteFallback := h.ensureForwardErrorResponse(c, *streamStarted)
 		reqLog.Warn("openai.audio_music.forward_failed",
 			zap.Int64("account_id", account.ID),
@@ -182,7 +198,7 @@ func (h *OpenAIGatewayHandler) finishSimpleOpenAIForward(
 		)
 		return
 	}
-	h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+	h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(requestModel), true, nil)
 	_ = apiKey
 	_ = result
 	_ = channelMapping
