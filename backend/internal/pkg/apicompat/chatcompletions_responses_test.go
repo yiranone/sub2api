@@ -407,6 +407,79 @@ func TestChatCompletionsToResponses_WhitespaceOnlyBase64ImageURLSkipped(t *testi
 	assert.Equal(t, "Describe this", parts[0].Text)
 }
 
+func TestChatCompletionsToResponses_FilePartFileData(t *testing.T) {
+	content := `[{"type":"text","text":"Summarize the attached document"},{"type":"file","file":{"filename":"document.pdf","file_data":"data:application/pdf;base64,JVBERi0xLjQ="}}]`
+	req := &ChatCompletionsRequest{
+		Model: "gpt-4o",
+		Messages: []ChatMessage{
+			{Role: "user", Content: json.RawMessage(content)},
+		},
+	}
+	resp, err := ChatCompletionsToResponses(req)
+	require.NoError(t, err)
+
+	var items []ResponsesInputItem
+	require.NoError(t, json.Unmarshal(resp.Input, &items))
+	require.Len(t, items, 1)
+
+	var parts []ResponsesContentPart
+	require.NoError(t, json.Unmarshal(items[0].Content, &parts))
+	require.Len(t, parts, 2)
+	assert.Equal(t, "input_text", parts[0].Type)
+	assert.Equal(t, "Summarize the attached document", parts[0].Text)
+	assert.Equal(t, "input_file", parts[1].Type)
+	assert.Equal(t, "document.pdf", parts[1].Filename)
+	assert.Equal(t, "data:application/pdf;base64,JVBERi0xLjQ=", parts[1].FileData)
+	assert.Empty(t, parts[1].FileID)
+}
+
+func TestChatCompletionsToResponses_FilePartFileID(t *testing.T) {
+	content := `[{"type":"file","file":{"file_id":"file-abc123"}}]`
+	req := &ChatCompletionsRequest{
+		Model: "gpt-4o",
+		Messages: []ChatMessage{
+			{Role: "user", Content: json.RawMessage(content)},
+		},
+	}
+	resp, err := ChatCompletionsToResponses(req)
+	require.NoError(t, err)
+
+	var items []ResponsesInputItem
+	require.NoError(t, json.Unmarshal(resp.Input, &items))
+	require.Len(t, items, 1)
+
+	var parts []ResponsesContentPart
+	require.NoError(t, json.Unmarshal(items[0].Content, &parts))
+	require.Len(t, parts, 1)
+	assert.Equal(t, "input_file", parts[0].Type)
+	assert.Equal(t, "file-abc123", parts[0].FileID)
+	assert.Empty(t, parts[0].FileData)
+}
+
+func TestChatCompletionsToResponses_EmptyFilePartSkipped(t *testing.T) {
+	// A file part with neither file_data nor file_id carries nothing the
+	// Responses API can use; dropping it (like empty image URLs) avoids an
+	// upstream 400 on an empty input_file part.
+	content := `[{"type":"text","text":"Describe this"},{"type":"file","file":{"filename":"empty.pdf"}}]`
+	req := &ChatCompletionsRequest{
+		Model: "gpt-4o",
+		Messages: []ChatMessage{
+			{Role: "user", Content: json.RawMessage(content)},
+		},
+	}
+	resp, err := ChatCompletionsToResponses(req)
+	require.NoError(t, err)
+
+	var items []ResponsesInputItem
+	require.NoError(t, json.Unmarshal(resp.Input, &items))
+	require.Len(t, items, 1)
+
+	var parts []ResponsesContentPart
+	require.NoError(t, json.Unmarshal(items[0].Content, &parts))
+	require.Len(t, parts, 1)
+	assert.Equal(t, "input_text", parts[0].Type)
+}
+
 func TestChatCompletionsToResponses_EmptyContentNeverNull(t *testing.T) {
 	// Regression for #2515: the upstream Responses API rejects an input item
 	// whose content field is JSON null. Any chat-completions message that
@@ -459,7 +532,7 @@ func TestChatCompletionsResponseToResponses_DeepSeekReasoningOnlyFallsBackToMess
 		}},
 	}
 
-	out := ChatCompletionsResponseToResponses(resp, "deepseek-reasoner", nil, false, nil)
+	out := ChatCompletionsResponseToResponses(resp, "deepseek-reasoner", nil, nil, false, nil)
 
 	require.Len(t, out.Output, 2)
 	require.Equal(t, "reasoning", out.Output[0].Type)
@@ -493,7 +566,7 @@ func TestChatCompletionsResponseToResponses_DeepSeekReasoningToolCallDoesNotFall
 		}},
 	}
 
-	out := ChatCompletionsResponseToResponses(resp, "deepseek-reasoner", nil, false, nil)
+	out := ChatCompletionsResponseToResponses(resp, "deepseek-reasoner", nil, nil, false, nil)
 
 	require.Len(t, out.Output, 2)
 	require.Equal(t, "reasoning", out.Output[0].Type)
@@ -1234,10 +1307,10 @@ func TestChatCompletionsToResponsesResponse_ReasoningFallbackToVisibleMessage(t 
 }
 
 func TestChatCompletionsChunkToResponsesEvents_Finalize(t *testing.T) {
-	state := NewChatCompletionsToResponsesState()
+	state := NewLegacyChatCompletionsToResponsesState()
 	state.Model = "gpt-5.3-codex"
 
-	events := ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
+	events := LegacyChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
 		ID:    "chatcmpl_stream",
 		Model: "doubao-1.5-thinking-pro",
 		Choices: []ChatChunkChoice{{
@@ -1249,7 +1322,7 @@ func TestChatCompletionsChunkToResponsesEvents_Finalize(t *testing.T) {
 	assert.Equal(t, "response.created", events[0].Type)
 	assert.Equal(t, "response.in_progress", events[1].Type)
 
-	events = ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
+	events = LegacyChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
 		ID:    "chatcmpl_stream",
 		Model: "doubao-1.5-thinking-pro",
 		Choices: []ChatChunkChoice{{
@@ -1263,7 +1336,7 @@ func TestChatCompletionsChunkToResponsesEvents_Finalize(t *testing.T) {
 	assert.Equal(t, "response.output_text.delta", events[2].Type)
 
 	toolIndex := 0
-	events = ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
+	events = LegacyChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
 		ID:    "chatcmpl_stream",
 		Model: "doubao-1.5-thinking-pro",
 		Choices: []ChatChunkChoice{{
@@ -1285,7 +1358,7 @@ func TestChatCompletionsChunkToResponsesEvents_Finalize(t *testing.T) {
 	assert.Equal(t, "response.output_item.added", events[0].Type)
 	assert.Equal(t, "response.function_call_arguments.delta", events[1].Type)
 
-	_ = ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
+	_ = LegacyChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
 		ID:    "chatcmpl_stream",
 		Model: "doubao-1.5-thinking-pro",
 		Choices: []ChatChunkChoice{{
@@ -1299,7 +1372,7 @@ func TestChatCompletionsChunkToResponsesEvents_Finalize(t *testing.T) {
 		},
 	}, state)
 
-	finalEvents := FinalizeChatCompletionsResponsesStream(state)
+	finalEvents := FinalizeLegacyChatCompletionsResponsesStream(state)
 	require.NotEmpty(t, finalEvents)
 	assert.Equal(t, "response.output_text.done", finalEvents[0].Type)
 	assert.Equal(t, "response.content_part.done", finalEvents[1].Type)
@@ -1314,10 +1387,10 @@ func TestChatCompletionsChunkToResponsesEvents_Finalize(t *testing.T) {
 }
 
 func TestChatCompletionsChunkToResponsesEvents_FinalizeReasoningOnlyAddsVisibleText(t *testing.T) {
-	state := NewChatCompletionsToResponsesState()
+	state := NewLegacyChatCompletionsToResponsesState()
 	state.Model = "gpt-5.4"
 
-	events := ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
+	events := LegacyChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
 		ID:    "chatcmpl_reasoning_stream",
 		Model: "doubao-seed-2-0-pro",
 		Choices: []ChatChunkChoice{{
@@ -1334,7 +1407,7 @@ func TestChatCompletionsChunkToResponsesEvents_FinalizeReasoningOnlyAddsVisibleT
 	assert.Equal(t, "response.output_item.added", events[2].Type)
 	assert.Equal(t, "response.reasoning_summary_text.delta", events[3].Type)
 
-	finalEvents := FinalizeChatCompletionsResponsesStream(state)
+	finalEvents := FinalizeLegacyChatCompletionsResponsesStream(state)
 	require.Len(t, finalEvents, 9)
 	assert.Equal(t, "response.reasoning_summary_text.done", finalEvents[0].Type)
 	assert.Equal(t, "response.output_item.done", finalEvents[1].Type)

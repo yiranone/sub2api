@@ -189,7 +189,7 @@ func (h *OpenAIGatewayHandler) finishSimpleOpenAIForward(
 	streamStarted *bool,
 ) {
 	if err != nil {
-		h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(requestModel), false, nil)
+		h.gatewayService.ReportOpenAIAccountScheduleResult(account, account.GetMappedModel(requestModel), false, nil)
 		wroteFallback := h.ensureForwardErrorResponse(c, *streamStarted)
 		reqLog.Warn("openai.audio_music.forward_failed",
 			zap.Int64("account_id", account.ID),
@@ -198,7 +198,7 @@ func (h *OpenAIGatewayHandler) finishSimpleOpenAIForward(
 		)
 		return
 	}
-	h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(requestModel), true, nil)
+	h.gatewayService.ReportOpenAIAccountScheduleResult(account, account.GetMappedModel(requestModel), true, nil)
 	_ = apiKey
 	_ = result
 	_ = channelMapping

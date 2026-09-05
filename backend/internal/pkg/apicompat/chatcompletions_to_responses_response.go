@@ -155,9 +155,9 @@ func chatFinishReasonToResponsesStatus(finishReason string) (string, *ResponsesI
 	}
 }
 
-// ChatCompletionsToResponsesState tracks state while converting Chat
+// LegacyChatCompletionsToResponsesState tracks state while converting Chat
 // Completions SSE chunks into Responses SSE events.
-type ChatCompletionsToResponsesState struct {
+type LegacyChatCompletionsToResponsesState struct {
 	ResponseID     string
 	Model          string
 	Created        int64
@@ -196,20 +196,20 @@ type chatOpenResponsesTool struct {
 	Arguments   string
 }
 
-// NewChatCompletionsToResponsesState returns an initialized stream converter state.
-func NewChatCompletionsToResponsesState() *ChatCompletionsToResponsesState {
-	return &ChatCompletionsToResponsesState{
+// NewLegacyChatCompletionsToResponsesState returns an initialized stream converter state.
+func NewLegacyChatCompletionsToResponsesState() *LegacyChatCompletionsToResponsesState {
+	return &LegacyChatCompletionsToResponsesState{
 		ResponseID: generateResponsesID(),
 		Created:    time.Now().Unix(),
 		Tools:      make(map[int]*chatOpenResponsesTool),
 	}
 }
 
-// ChatCompletionsChunkToResponsesEvents converts a single Chat Completions
+// LegacyChatCompletionsChunkToResponsesEvents converts a single Chat Completions
 // chunk into zero or more Responses events.
-func ChatCompletionsChunkToResponsesEvents(
+func LegacyChatCompletionsChunkToResponsesEvents(
 	chunk *ChatCompletionsChunk,
-	state *ChatCompletionsToResponsesState,
+	state *LegacyChatCompletionsToResponsesState,
 ) []ResponsesStreamEvent {
 	if chunk == nil || state == nil {
 		return nil
@@ -300,9 +300,9 @@ func ChatCompletionsChunkToResponsesEvents(
 	return events
 }
 
-// FinalizeChatCompletionsResponsesStream emits trailing done/completed events
+// FinalizeLegacyChatCompletionsResponsesStream emits trailing done/completed events
 // after the upstream Chat Completions stream ends.
-func FinalizeChatCompletionsResponsesStream(state *ChatCompletionsToResponsesState) []ResponsesStreamEvent {
+func FinalizeLegacyChatCompletionsResponsesStream(state *LegacyChatCompletionsToResponsesState) []ResponsesStreamEvent {
 	if state == nil || state.CompletedSent {
 		return nil
 	}
@@ -418,7 +418,7 @@ type chatResponseStreamItem struct {
 	Visible     bool
 }
 
-func (s *ChatCompletionsToResponsesState) sortedOpenItems() []chatResponseStreamItem {
+func (s *LegacyChatCompletionsToResponsesState) sortedOpenItems() []chatResponseStreamItem {
 	items := make([]chatResponseStreamItem, 0, len(s.Tools)+2)
 	if s.Reasoning != nil {
 		items = append(items, chatResponseStreamItem{
@@ -459,7 +459,7 @@ func (s *ChatCompletionsToResponsesState) sortedOpenItems() []chatResponseStream
 	return items
 }
 
-func (s *ChatCompletionsToResponsesState) ensureReasoningOpen() []ResponsesStreamEvent {
+func (s *LegacyChatCompletionsToResponsesState) ensureReasoningOpen() []ResponsesStreamEvent {
 	if s.Reasoning != nil {
 		return nil
 	}
@@ -480,7 +480,7 @@ func (s *ChatCompletionsToResponsesState) ensureReasoningOpen() []ResponsesStrea
 	})}
 }
 
-func (s *ChatCompletionsToResponsesState) ensureMessageOpen() []ResponsesStreamEvent {
+func (s *LegacyChatCompletionsToResponsesState) ensureMessageOpen() []ResponsesStreamEvent {
 	if s.Message != nil {
 		return nil
 	}
@@ -494,7 +494,7 @@ func (s *ChatCompletionsToResponsesState) ensureMessageOpen() []ResponsesStreamE
 	return s.makeMessageOpenEvents(s.Message)
 }
 
-func (s *ChatCompletionsToResponsesState) makeMessageOpenEvents(item *chatOpenResponsesItem) []ResponsesStreamEvent {
+func (s *LegacyChatCompletionsToResponsesState) makeMessageOpenEvents(item *chatOpenResponsesItem) []ResponsesStreamEvent {
 	if item == nil {
 		return nil
 	}
@@ -524,7 +524,7 @@ func (s *ChatCompletionsToResponsesState) makeMessageOpenEvents(item *chatOpenRe
 	}
 }
 
-func (s *ChatCompletionsToResponsesState) ensureToolOpen(
+func (s *LegacyChatCompletionsToResponsesState) ensureToolOpen(
 	toolCall ChatToolCall,
 	fallbackIdx int,
 ) *chatOpenResponsesTool {
@@ -553,7 +553,7 @@ func (s *ChatCompletionsToResponsesState) ensureToolOpen(
 	return openTool
 }
 
-func (s *ChatCompletionsToResponsesState) ensureToolAddedEvent(
+func (s *LegacyChatCompletionsToResponsesState) ensureToolAddedEvent(
 	toolCall ChatToolCall,
 	fallbackIdx int,
 	openTool *chatOpenResponsesTool,
@@ -591,7 +591,7 @@ func (s *ChatCompletionsToResponsesState) ensureToolAddedEvent(
 	})}
 }
 
-func (s *ChatCompletionsToResponsesState) makeCreatedEvent() ResponsesStreamEvent {
+func (s *LegacyChatCompletionsToResponsesState) makeCreatedEvent() ResponsesStreamEvent {
 	s.CreatedSent = true
 	return s.makeEvent("response.created", &ResponsesStreamEvent{
 		Response: &ResponsesResponse{
@@ -604,7 +604,7 @@ func (s *ChatCompletionsToResponsesState) makeCreatedEvent() ResponsesStreamEven
 	})
 }
 
-func (s *ChatCompletionsToResponsesState) makeInProgressEvent() ResponsesStreamEvent {
+func (s *LegacyChatCompletionsToResponsesState) makeInProgressEvent() ResponsesStreamEvent {
 	s.InProgressSent = true
 	return s.makeEvent("response.in_progress", &ResponsesStreamEvent{
 		Response: &ResponsesResponse{
@@ -617,7 +617,7 @@ func (s *ChatCompletionsToResponsesState) makeInProgressEvent() ResponsesStreamE
 	})
 }
 
-func (s *ChatCompletionsToResponsesState) makeCompletedEvent(
+func (s *LegacyChatCompletionsToResponsesState) makeCompletedEvent(
 	status string,
 	incompleteDetails *ResponsesIncompleteDetails,
 ) ResponsesStreamEvent {
@@ -634,7 +634,7 @@ func (s *ChatCompletionsToResponsesState) makeCompletedEvent(
 	})
 }
 
-func (s *ChatCompletionsToResponsesState) buildCompletedOutputs() []ResponsesOutput {
+func (s *LegacyChatCompletionsToResponsesState) buildCompletedOutputs() []ResponsesOutput {
 	items := s.sortedOpenItems()
 	if len(items) == 0 {
 		return []ResponsesOutput{}
@@ -677,7 +677,7 @@ func (s *ChatCompletionsToResponsesState) buildCompletedOutputs() []ResponsesOut
 	return outputs
 }
 
-func (s *ChatCompletionsToResponsesState) applyVisibleTextFallbackFromReasoning() {
+func (s *LegacyChatCompletionsToResponsesState) applyVisibleTextFallbackFromReasoning() {
 	if s == nil || s.Reasoning == nil || strings.TrimSpace(s.Reasoning.Text) == "" {
 		return
 	}
@@ -698,7 +698,7 @@ func (s *ChatCompletionsToResponsesState) applyVisibleTextFallbackFromReasoning(
 	}
 }
 
-func (s *ChatCompletionsToResponsesState) makeEvent(
+func (s *LegacyChatCompletionsToResponsesState) makeEvent(
 	eventType string,
 	template *ResponsesStreamEvent,
 ) ResponsesStreamEvent {
@@ -724,7 +724,7 @@ func (s *ChatCompletionsToResponsesState) makeEvent(
 	return evt
 }
 
-func (s *ChatCompletionsToResponsesState) chatToolIndex(toolCall ChatToolCall, fallback int) int {
+func (s *LegacyChatCompletionsToResponsesState) chatToolIndex(toolCall ChatToolCall, fallback int) int {
 	if toolCall.Index != nil && *toolCall.Index >= 0 {
 		return *toolCall.Index
 	}
