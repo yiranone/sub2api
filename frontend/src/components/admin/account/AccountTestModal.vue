@@ -81,12 +81,12 @@
         />
       </div>
 
-      <div v-if="supportsPromptInput" class="space-y-1.5">
+      <div v-if="supportsMediaTest || supportsPromptInput" class="space-y-1.5">
         <TextArea
           v-model="testPrompt"
-          :label="promptInputLabel"
-          :placeholder="promptInputPlaceholder"
-          :hint="promptInputHint"
+          :label="supportsMediaTest ? mediaPromptLabel : promptInputLabel"
+          :placeholder="supportsMediaTest ? mediaPromptPlaceholder : promptInputPlaceholder"
+          :hint="supportsMediaTest ? mediaTestHint : promptInputHint"
           :disabled="status === 'connecting'"
           rows="3"
         />
@@ -257,10 +257,12 @@
         <div
           v-for="(audio, index) in generatedAudios"
           :key="`audio-${index}`"
-          class="rounded-xl border border-gray-200 bg-white p-3 dark:border-dark-500 dark:bg-dark-700"
+          class="rounded-xl border border-gray-200 bg-white p-3 shadow-sm dark:border-dark-500 dark:bg-dark-700"
         >
           <audio :src="audio.url" controls class="w-full" :type="audio.mimeType" />
-          <div class="mt-1 text-xs text-gray-500 dark:text-gray-300">{{ audio.mimeType || 'audio/*' }}</div>
+          <div class="mt-1 text-xs text-gray-500 dark:text-gray-300">
+            {{ audio.mimeType || 'audio/*' }}<span v-if="audio.durationMs"> · {{ formatDuration(audio.durationMs) }}</span>
+          </div>
         </div>
       </div>
 
@@ -313,7 +315,7 @@
         </div>
         <span class="flex items-center gap-1">
           <Icon name="chat" size="sm" :stroke-width="2" />
-          {{ testModeSummary }}
+          {{ supportsMediaTest ? mediaTestModeLabel : testModeSummary }}
         </span>
       </div>
     </div>
@@ -388,6 +390,7 @@ interface OutputLine {
 interface PreviewMedia {
   url: string
   mimeType?: string
+  durationMs?: number
 }
 
 const props = defineProps<{
@@ -447,8 +450,8 @@ const supportsGeminiImageTest = computed(() => {
 
 const supportsOpenAIImageTest = computed(() => {
   const modelID = selectedModelId.value.toLowerCase()
-  if (!modelID.startsWith('gpt-image-')) return false
-  return props.account?.platform === 'openai'
+  if (!modelID.startsWith('gpt-image-') && !modelID.startsWith('claude-image-')) return false
+  return props.account?.platform === 'openai' || props.account?.platform === 'anthropic'
 })
 
 const isGrokImageModel = (id: string) => {
@@ -689,6 +692,43 @@ const canStartTest = computed(() => {
   return Boolean(selectedModelId.value)
 })
 
+const selectedModelLower = computed(() => selectedModelId.value.toLowerCase())
+const supportsVideoTest = computed(() => selectedModelLower.value.startsWith('gpt-video-') || selectedModelLower.value.startsWith('claude-video-'))
+const supportsSpeechTest = computed(() => (
+  selectedModelLower.value === 'gpt-4o-mini-tts' ||
+  selectedModelLower.value.startsWith('tts-') ||
+  selectedModelLower.value.startsWith('gpt-audio-') ||
+  selectedModelLower.value.startsWith('claude-audio-') ||
+  selectedModelLower.value.startsWith('claude-speech-')
+))
+const supportsMusicTest = computed(() => selectedModelLower.value.startsWith('gpt-music-') || selectedModelLower.value.startsWith('claude-music-') || selectedModelLower.value === 'music')
+const supportsMediaTest = computed(() => supportsImageTest.value || supportsVideoTest.value || supportsSpeechTest.value || supportsMusicTest.value)
+const mediaKind = computed<'image' | 'video' | 'speech' | 'music' | 'text'>(() => {
+  if (supportsImageTest.value) return 'image'
+  if (supportsVideoTest.value) return 'video'
+  if (supportsSpeechTest.value) return 'speech'
+  if (supportsMusicTest.value) return 'music'
+  return 'text'
+})
+const mediaPromptLabel = computed(() => t(`admin.accounts.mediaPrompt.${mediaKind.value}.label`))
+const mediaPromptPlaceholder = computed(() => t(`admin.accounts.mediaPrompt.${mediaKind.value}.placeholder`))
+const mediaTestHint = computed(() => t(`admin.accounts.mediaPrompt.${mediaKind.value}.hint`))
+const mediaTestModeLabel = computed(() => t(`admin.accounts.mediaPrompt.${mediaKind.value}.mode`))
+const mediaRequestLabel = computed(() => t(`admin.accounts.mediaPrompt.${mediaKind.value}.sending`))
+const defaultMediaPrompts: Record<'image' | 'video' | 'speech' | 'music', string> = {
+  image: 'Generate a cute orange cat astronaut sticker on a clean pastel background.',
+  video: 'A tiny robot walking through a neon city street, cinematic camera movement.',
+  speech: 'Hello from MiniMax speech synthesis.',
+  music: 'A short uplifting piano melody.'
+}
+
+const formatDuration = (durationMs: number) => {
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`
+}
+
 const sortTestModels = (models: ClaudeModel[]) => {
   const priorityMap = new Map(prioritizedGeminiModels.map((id, index) => [id, index]))
 
@@ -751,6 +791,18 @@ watch(
     }
   }
 )
+
+watch(selectedModelId, () => {
+  if (supportsMediaTest.value && !testPrompt.value.trim()) {
+    const kind = mediaKind.value
+    if (kind !== 'text') {
+      testPrompt.value = t(`admin.accounts.mediaPrompt.${kind}.default`)
+      if (testPrompt.value.includes('admin.accounts.mediaPrompt.')) {
+        testPrompt.value = defaultMediaPrompts[kind]
+      }
+    }
+  }
+})
 
 watch(grokTestMode, () => {
   if (!isGrokAccount.value) return
@@ -852,7 +904,7 @@ const startTest = async () => {
       audio_data_url?: string
     } = {
       model_id: showModelSelect.value ? selectedModelId.value : '',
-      prompt: supportsPromptInput.value ? testPrompt.value.trim() : ''
+      prompt: (supportsPromptInput.value || supportsMediaTest.value) ? testPrompt.value.trim() : ''
     }
     if (isOpenAIAccount.value) {
       requestBody.mode = testMode.value
@@ -945,8 +997,9 @@ const handleEvent = (event: {
   success?: boolean
   error?: string
   image_url?: string
-  audio_url?: string
   video_url?: string
+  audio_url?: string
+  duration_ms?: number
   mime_type?: string
 }) => {
   switch (event.type) {
@@ -956,7 +1009,9 @@ const handleEvent = (event: {
         addLine(t('admin.accounts.usingModel', { model: event.model }), 'text-cyan-400')
       }
       addLine(
-        isGrokAccount.value
+        supportsMediaTest.value
+            ? mediaRequestLabel.value
+          : isGrokAccount.value
           ? grokTestMode.value === 'video'
             ? t('admin.accounts.sendingVideoRequest')
             : grokTestMode.value === 'image'
@@ -996,16 +1051,6 @@ const handleEvent = (event: {
       }
       break
 
-    case 'audio':
-      if (event.audio_url) {
-        generatedAudios.value.push({
-          url: event.audio_url,
-          mimeType: event.mime_type
-        })
-        addLine(t('admin.accounts.audioReceived', { count: generatedAudios.value.length }), 'text-purple-300')
-      }
-      break
-
     case 'video':
       if (event.video_url) {
         generatedVideos.value.push({
@@ -1013,6 +1058,17 @@ const handleEvent = (event: {
           mimeType: event.mime_type
         })
         addLine(t('admin.accounts.videoReceived', { count: generatedVideos.value.length }), 'text-purple-300')
+      }
+      break
+
+    case 'audio':
+      if (event.audio_url) {
+        generatedAudios.value.push({
+          url: event.audio_url,
+          mimeType: event.mime_type,
+          durationMs: event.duration_ms
+        })
+        addLine(t('admin.accounts.audioReceived', { count: generatedAudios.value.length }), 'text-purple-300')
       }
       break
 

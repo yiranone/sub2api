@@ -471,7 +471,7 @@ func (s *OpenAIGatewayService) handleResponsesViaChatCompletionsStream(
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.WriteHeader(http.StatusOK)
 
-	state := apicompat.NewChatCompletionsToResponsesState()
+	state := apicompat.NewLegacyChatCompletionsToResponsesState()
 	state.Model = originalModel
 
 	var usage OpenAIUsage
@@ -594,7 +594,7 @@ func (s *OpenAIGatewayService) handleResponsesViaChatCompletionsStream(
 			usage = chatUsageToOpenAIUsage(chunk.Usage)
 		}
 
-		events := apicompat.ChatCompletionsChunkToResponsesEvents(&chunk, state)
+		events := apicompat.LegacyChatCompletionsChunkToResponsesEvents(&chunk, state)
 		if writeEvents(events) {
 			return resultWithUsage(), nil
 		}
@@ -616,7 +616,7 @@ func (s *OpenAIGatewayService) handleResponsesViaChatCompletionsStream(
 		logger.LegacyPrintf("service.openai_gateway", "[Compat billing debug] stage=minimax_usage_estimated_stream input_tokens=%d output_tokens=%d",
 			usage.InputTokens, usage.OutputTokens)
 	}
-	finalEvents := apicompat.FinalizeChatCompletionsResponsesStream(state)
+	finalEvents := apicompat.FinalizeLegacyChatCompletionsResponsesStream(state)
 	if writeEvents(finalEvents) {
 		return resultWithUsage(), nil
 	}

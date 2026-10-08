@@ -421,6 +421,15 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 	mediaByCallID := make(toolOutputMediaByCallID)
 	invalidFunctionCallIDs := make(map[string]struct{})
 	invalidEmptyFunctionCallOutputs := 0
+	var pendingTopLevelParts []ChatContentPart
+	flushTopLevelParts := func() {
+		if len(pendingTopLevelParts) == 0 {
+			return
+		}
+		content, _ := json.Marshal(pendingTopLevelParts)
+		messages = append(messages, ChatMessage{Role: "user", Content: content})
+		pendingTopLevelParts = nil
+	}
 
 	reasoningForAssistant := func() string {
 		if pendingReasoning != "" {
@@ -450,6 +459,9 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 
 		role := chatCompletionsBridgeRole(rawString(item["role"]))
 		itemType := rawString(item["type"])
+		if itemType != "input_text" && itemType != "input_image" && itemType != "text" {
+			flushTopLevelParts()
+		}
 		switch itemType {
 		case "reasoning":
 			if txt := extractResponsesReasoningText(item); txt != "" {
@@ -598,7 +610,10 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 			lastTurnReasoning = ""
 			continue
 		case "input_text", "text":
-			messages = appendTopLevelUserPart(messages, ChatContentPart{Type: "text", Text: rawString(item["text"])})
+			text := rawString(item["text"])
+			if text != "" {
+				pendingTopLevelParts = append(pendingTopLevelParts, ChatContentPart{Type: "text", Text: text})
+			}
 			pendingReasoning = ""
 			lastTurnReasoning = ""
 			continue
@@ -607,10 +622,11 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 			if imageURL == "" {
 				imageURL = rawNestedString(item["image_url"], "url")
 			}
-			messages = appendTopLevelUserPart(messages, ChatContentPart{
-				Type:     "image_url",
-				ImageURL: &ChatImageURL{URL: imageURL},
-			})
+			if strings.TrimSpace(imageURL) != "" {
+				pendingTopLevelParts = append(pendingTopLevelParts, ChatContentPart{
+					Type: "image_url", ImageURL: &ChatImageURL{URL: imageURL},
+				})
+			}
 			pendingReasoning = ""
 			lastTurnReasoning = ""
 			continue
@@ -655,6 +671,7 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 		messages = append(messages, msg)
 	}
 
+	flushTopLevelParts()
 	return messages, mediaByCallID, nil
 }
 
@@ -1720,9 +1737,9 @@ func (state *ChatCompletionsToResponsesStreamState) allocOutputIndex() int {
 	return idx
 }
 
-// ChatCompletionsBridgeChunkToResponsesEvents converts one Chat Completions stream
+// ChatCompletionsChunkToResponsesEvents converts one Chat Completions stream
 // chunk into zero or more Responses stream events.
-func ChatCompletionsBridgeChunkToResponsesEvents(
+func ChatCompletionsChunkToResponsesEvents(
 	chunk *ChatCompletionsChunk,
 	state *ChatCompletionsToResponsesStreamState,
 ) []ResponsesStreamEvent {
@@ -1834,8 +1851,8 @@ func ChatCompletionsBridgeChunkToResponsesEvents(
 	return events
 }
 
-// FinalizeChatCompletionsBridgeResponsesStream emits terminal Responses events.
-func FinalizeChatCompletionsBridgeResponsesStream(state *ChatCompletionsToResponsesStreamState) []ResponsesStreamEvent {
+// FinalizeChatCompletionsResponsesStream emits terminal Responses events.
+func FinalizeChatCompletionsResponsesStream(state *ChatCompletionsToResponsesStreamState) []ResponsesStreamEvent {
 	if state == nil || state.CompletedSent {
 		return nil
 	}
@@ -2315,4 +2332,19 @@ func nonEmpty(value, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// ChatCompletionsBridgeChunkToResponsesEvents is kept for callers that used the
+// older bridge-specific name before the conversion API was made public.
+func ChatCompletionsBridgeChunkToResponsesEvents(
+	chunk *ChatCompletionsChunk,
+	state *ChatCompletionsToResponsesStreamState,
+) []ResponsesStreamEvent {
+	return ChatCompletionsChunkToResponsesEvents(chunk, state)
+}
+
+// FinalizeChatCompletionsBridgeResponsesStream is the compatibility alias for
+// the bridge stream finalizer's former name.
+func FinalizeChatCompletionsBridgeResponsesStream(state *ChatCompletionsToResponsesStreamState) []ResponsesStreamEvent {
+	return FinalizeChatCompletionsResponsesStream(state)
 }

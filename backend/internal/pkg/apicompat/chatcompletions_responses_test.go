@@ -1357,10 +1357,10 @@ func TestChatCompletionsToResponsesResponse_ReasoningFallbackToVisibleMessage(t 
 }
 
 func TestChatCompletionsChunkToResponsesEvents_Finalize(t *testing.T) {
-	state := NewChatCompletionsToResponsesState()
+	state := NewLegacyChatCompletionsToResponsesState()
 	state.Model = "gpt-5.3-codex"
 
-	events := ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
+	events := LegacyChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
 		ID:    "chatcmpl_stream",
 		Model: "doubao-1.5-thinking-pro",
 		Choices: []ChatChunkChoice{{
@@ -1372,7 +1372,7 @@ func TestChatCompletionsChunkToResponsesEvents_Finalize(t *testing.T) {
 	assert.Equal(t, "response.created", events[0].Type)
 	assert.Equal(t, "response.in_progress", events[1].Type)
 
-	events = ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
+	events = LegacyChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
 		ID:    "chatcmpl_stream",
 		Model: "doubao-1.5-thinking-pro",
 		Choices: []ChatChunkChoice{{
@@ -1386,7 +1386,7 @@ func TestChatCompletionsChunkToResponsesEvents_Finalize(t *testing.T) {
 	assert.Equal(t, "response.output_text.delta", events[2].Type)
 
 	toolIndex := 0
-	events = ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
+	events = LegacyChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
 		ID:    "chatcmpl_stream",
 		Model: "doubao-1.5-thinking-pro",
 		Choices: []ChatChunkChoice{{
@@ -1408,7 +1408,7 @@ func TestChatCompletionsChunkToResponsesEvents_Finalize(t *testing.T) {
 	assert.Equal(t, "response.output_item.added", events[0].Type)
 	assert.Equal(t, "response.function_call_arguments.delta", events[1].Type)
 
-	_ = ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
+	_ = LegacyChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
 		ID:    "chatcmpl_stream",
 		Model: "doubao-1.5-thinking-pro",
 		Choices: []ChatChunkChoice{{
@@ -1422,7 +1422,7 @@ func TestChatCompletionsChunkToResponsesEvents_Finalize(t *testing.T) {
 		},
 	}, state)
 
-	finalEvents := FinalizeChatCompletionsResponsesStream(state)
+	finalEvents := FinalizeLegacyChatCompletionsResponsesStream(state)
 	require.NotEmpty(t, finalEvents)
 	assert.Equal(t, "response.output_text.done", finalEvents[0].Type)
 	assert.Equal(t, "response.content_part.done", finalEvents[1].Type)
@@ -1437,10 +1437,10 @@ func TestChatCompletionsChunkToResponsesEvents_Finalize(t *testing.T) {
 }
 
 func TestChatCompletionsChunkToResponsesEvents_FinalizeReasoningOnlyAddsVisibleText(t *testing.T) {
-	state := NewChatCompletionsToResponsesState()
+	state := NewLegacyChatCompletionsToResponsesState()
 	state.Model = "gpt-5.4"
 
-	events := ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
+	events := LegacyChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
 		ID:    "chatcmpl_reasoning_stream",
 		Model: "doubao-seed-2-0-pro",
 		Choices: []ChatChunkChoice{{
@@ -1457,7 +1457,7 @@ func TestChatCompletionsChunkToResponsesEvents_FinalizeReasoningOnlyAddsVisibleT
 	assert.Equal(t, "response.output_item.added", events[2].Type)
 	assert.Equal(t, "response.reasoning_summary_text.delta", events[3].Type)
 
-	finalEvents := FinalizeChatCompletionsResponsesStream(state)
+	finalEvents := FinalizeLegacyChatCompletionsResponsesStream(state)
 	require.Len(t, finalEvents, 9)
 	assert.Equal(t, "response.reasoning_summary_text.done", finalEvents[0].Type)
 	assert.Equal(t, "response.output_item.done", finalEvents[1].Type)
